@@ -6,7 +6,7 @@
 > Posita itself is in pre-alpha; the syntax is under active design and may change without notice.
 
 ## Design Philosophy
-Posita is a **ultra-static, systems programming language** where the programmer explicitly *posits* every representation detail: bit widths, pointer sizes, default values, and even error paths. All decisions are made visible in source and enforced at compile time with zero runtime overhead.
+Posita is a **ultra-static, systems programming language** where the programmer explicitly *posits* every representation detail: bit widths, pointer sizes, default values, and error paths. All decisions are made visible in source and enforced at compile time with zero runtime overhead.
 
 - **Explicit over implicit**: No hidden ABI, no type-erased errors, no null pointers.
 - **Compile-time over run-time**: Error handling, defaults, and optimizations are resolved statically.
@@ -18,8 +18,8 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 
 ### Keywords
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
-`comptime`, `import`, `as`, `true`, `false`, `null`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
-`Result`, `Option`, `catch`, `panic`, `unsafe`, `if`, `let`, `while`, `let`, `defer`
+`comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
+`Result`, `Option`, `catch`, `panic`, `unsafe`, `let`, `finally`
 
 `Int`, `UInt`, `Ptr` are built-in type constructors, not reserved words.
 
@@ -177,16 +177,20 @@ match value {
 }
 ```
 
-### Deferred Execution (`defer`)
-A `defer` block is executed at the end of the enclosing scope, regardless of how the scope is exited (normal return, `leave`, or error propagation). Multiple `defer` blocks execute in LIFO order. It is useful for resource cleanup.
+### Finally Blocks for Cleanup
+A `finally` block attached to a function body guarantees execution of cleanup logic after the function exits, regardless of whether it exits via `return`, `leave`, `leave with`, or `?` propagation. The block is placed after the function body, making all exit paths visible and structured.
 ```plaintext
 def process() -> Result<(), Error> {
     set file = File.open("data.bin")?;
-    defer file.close();
     // ... operations that may fail ...
     return Ok(());
+} finally {
+    if file.is_open() {
+        file.close();
+    }
 }
 ```
+Multiple `finally` blocks are not allowed; put all cleanup in a single block. This approach keeps cleanup explicit and centralized.
 
 ### Expressions
 - Arithmetic: `+`, `-`, `*`, `/`, `%`
@@ -288,7 +292,7 @@ comptime def eval_polynomial(coeffs: &[Int<32>], x: Int<32>) -> Int<64> {
 A `comptime` function may return a `type`, enabling code-driven type construction:
 ```plaintext
 comptime def make_vector(Elem: type, N: usize) -> type {
-    return [Elem; N];   // or Array<Elem, N>
+    return [Elem; N];
 }
 
 type Vec4f = make_vector(Float<32>, 4);
@@ -331,14 +335,9 @@ from module import item1, item2;
 type Byte = UInt<8> with default = 0x00;
 type BufPtr = Ptr<size = UInt<16>, pointee = Byte>;
 
-comptime def make_buffer(len: usize) -> type {
-    return [Byte; len];
-}
-
 def concat(left: &[Byte], right: &[Byte]) -> Result<BufPtr, AllocError> {
     set total_len = left'len + right'len;
     set result     = alloc(BufPtr, total_len)?;
-    defer if result != null { free(result); }  // optional cleanup
     set mut pos    = 0;
 
     for i in 0..left'len {
@@ -355,13 +354,16 @@ def concat(left: &[Byte], right: &[Byte]) -> Result<BufPtr, AllocError> {
     }
 
     return Ok(result);
+} finally {
+    // Optional cleanup if needed
+    // free_any_temp();
 }
 ```
-This example now includes `defer`, `?`, `leave`, type factory usage, and bit-width parameterization.
+This example combines bit-width parameterization, type defaults, `?` error propagation, `leave`, and a `finally` block for structured cleanup.
 
 ---
 
 ## Relationship to Other Languages
 - **From Ada**: explicit representation control, attribute syntax, strong typing, English keywords.
 - **From Rust**: `Result`-based error handling (but without type erasure), `if let`, `match`, block expressions.
-- **Unique to Posita**: bit-width parameterized integers, orthogonal pointer sizes, type-level defaults, `leave`/`leave with`, type capture `auto[<T>..]`, fully static error monomorphization, compile-time type factories and reflection.
+- **Unique to Posita**: bit-width parameterized integers, orthogonal pointer sizes, type-level defaults, `leave`/`leave with`, type capture `auto[<T>..]`, fully static error monomorphization, compile-time type factories, reflection, and structured `finally` blocks.
