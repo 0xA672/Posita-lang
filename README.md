@@ -1,2 +1,6 @@
-# Posita-lang
-Ultra-static typing meets compile-time control — bit widths, pointer sizes, defaults, and optimization policies, all explicit.
+# Posita
+
+> [!IMPORTANT]  
+> Posita is under active design. The repository does not contain any `.rs` files yet.
+> 
+> See [docs/SYNTAX.md](docs/SYNTAX.md) for the language syntax specification.
