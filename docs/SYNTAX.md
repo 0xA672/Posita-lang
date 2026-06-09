@@ -1,5 +1,5 @@
 # Posita Language Syntax
-**Document revision: 2026-06-09** (working draft, not a frozen specification)
+**Document revision: 2026-06-10** (working draft, not a frozen specification)
 
 > [!NOTE]
 > This document version tracks its own edits. It does **not** correspond to a language specification release.
@@ -19,7 +19,8 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 ### Keywords
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
-`Result`, `Option`, `catch`, `panic`, `unsafe`, `let`, `finally`
+`Result`, `Option`, `catch`, `panic`, `unsafe`, `let`, `finally`,
+`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`
 
 `Int`, `UInt`, `Ptr` are built-in type constructors, not reserved words.
 
@@ -42,6 +43,9 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 
 ## Type System
 
+### Value Semantics
+Posita defaults to **copy semantics** for all types that implement the `Copy` trait (automatically derived for small, bit-fixed types like `Int<N>`, structs of `Copy` fields, etc.). Copying creates an independent value with the same representation. Large types like `Vector<T>` are **not** `Copy` and must be explicitly cloned or passed by reference. This choice eliminates "moved-from" invalid states and simplifies reasoning in safety-critical contexts. Explicit `move` semantics are available via the `move` keyword for ownership transfer optimization.
+
 ### Bit-width Parameterized Integers
 - Signed: `Int<bits>`, `bits` must be compile-time constant, 1..64.
 - Unsigned: `UInt<bits>`.
@@ -59,6 +63,17 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 type MyInt = Int<8> with default = 1;
 ```
 Any variable declared as `MyInt` without an explicit initializer will be automatically initialized to `1`.
+
+### Type Invariants
+A type may define an `invariant` clause that all valid instances must satisfy. The compiler verifies or enforces the invariant at every construction point.
+```plaintext
+type NonZeroInt = exists n: Int<32>
+    invariant n != 0;
+
+type PositiveArray = exists arr: [Int<32>; N]
+    invariant forall i in 0..arr'len: arr[i] > 0;
+```
+When a value of such a type is constructed, the compiler statically proves the invariant or requires a runtime check (depending on safety mode). Once established, the invariant is assumed to hold for subsequent uses, enabling optimizations like eliding redundant checks.
 
 ### Composite Types
 - Arrays: `[T; N]` (fixed size), `[T]` (slice, usually behind a reference).
@@ -190,7 +205,7 @@ def process() -> Result<(), Error> {
     }
 }
 ```
-Multiple `finally` blocks are not allowed; put all cleanup in a single block. This approach keeps cleanup explicit and centralized.
+Multiple `finally` blocks are not allowed; put all cleanup in a single block.
 
 ### Expressions
 - Arithmetic: `+`, `-`, `*`, `/`, `%`
@@ -224,7 +239,7 @@ def read_file(path: &[Byte]) -> Result<String, FileError> {
     // ...
 }
 ```
-The compiler enforces that every `?` is compatible with the function's error signature. There is no `Box<dyn Error>` or other type-erased errors; the specific error type is always known at compile time, allowing complete monomorphization and zero overhead.
+The compiler enforces that every `?` is compatible with the function's error signature. There is no type-erased error representation; the specific error type is always known at compile time, enabling full monomorphization and zero overhead.
 
 ### Handling Errors Locally with `catch`
 `catch` provides pattern-matching on the error value directly after a fallible expression:
@@ -269,6 +284,74 @@ def maybe_get() -> Option<&Int<32>> {
     // ...
 }
 ```
+
+---
+
+## Contracts and Constraints
+
+Posita supports design-by-contract through `requires` and `ensures` clauses, and general type-level constraints via `invariant` and `constraint`.
+
+### Function Contracts
+- `requires`: a precondition that must hold when the function is called. The compiler may prove it statically or insert a runtime check (depending on safety mode).
+- `ensures`: a postcondition that must hold upon return. The compiler attempts to verify it; unprovable postconditions cause a compile error in strict mode.
+```plaintext
+def divide(a: Int<32>, b: Int<32>) -> Int<32>
+    requires b != 0
+    ensures result * b == a
+{
+    return a / b;
+}
+```
+
+### Loop Invariants
+Loops may specify an `invariant` to aid automated verification:
+```plaintext
+def sum(arr: &[Int<32>]) -> Int<32>
+    ensures result == fold(arr, 0, +)
+{
+    set mut total = 0;
+    for i in 0..arr'len
+        invariant total == fold(arr[0..i], 0, +)
+    {
+        total += arr[i];
+    }
+    return total;
+}
+```
+The invariant describes a property that holds before each iteration and after the loop, enabling the compiler to prove the `ensures` clause.
+
+### Type Invariants (already described in Type System)
+Type invariants are part of the type definition and are enforced at construction time.
+
+### Generic Constraints with `where`
+For complex generic requirements, use `where` clauses to express trait bounds and associated type constraints:
+```plaintext
+def serialize<T, S>(value: &T, stream: &mut S) -> Result<(), Error>
+    where T: Serialize,
+          S: Write,
+          T::Format: Display,
+          S::Error: ConvertibleTo<Error>
+{
+    // implementation
+}
+```
+
+### Reusable Constraint Blocks (`constraint`)
+To avoid repetition, group constraints into a named `constraint` block:
+```plaintext
+constraint SortableContainer<C> {
+    C: Container,
+    C::Item: Ord,
+    C::Item: Default,
+}
+
+def sort<C>(container: &mut C)
+    where C: SortableContainer
+{
+    // implementation
+}
+```
+Constraint blocks can include any bound allowed in a `where` clause, including nested constraints.
 
 ---
 
@@ -335,7 +418,10 @@ from module import item1, item2;
 type Byte = UInt<8> with default = 0x00;
 type BufPtr = Ptr<size = UInt<16>, pointee = Byte>;
 
-def concat(left: &[Byte], right: &[Byte]) -> Result<BufPtr, AllocError> {
+def concat(left: &[Byte], right: &[Byte]) -> Result<BufPtr, AllocError>
+    requires left'len + right'len <= max_alloc_size
+    ensures result'len == left'len + right'len
+{
     set total_len = left'len + right'len;
     set result     = alloc(BufPtr, total_len)?;
     set mut pos    = 0;
@@ -355,15 +441,14 @@ def concat(left: &[Byte], right: &[Byte]) -> Result<BufPtr, AllocError> {
 
     return Ok(result);
 } finally {
-    // Optional cleanup if needed
     // free_any_temp();
 }
 ```
-This example combines bit-width parameterization, type defaults, `?` error propagation, `leave`, and a `finally` block for structured cleanup.
+This example combines bit-width parameterization, type defaults, `?` error propagation, `leave`, contracts, and a `finally` block for structured cleanup.
 
 ---
 
 ## Relationship to Other Languages
-- **From Ada**: explicit representation control, attribute syntax, strong typing, English keywords.
-- **From Rust**: `Result`-based error handling (but without type erasure), `if let`, `match`, block expressions.
-- **Unique to Posita**: bit-width parameterized integers, orthogonal pointer sizes, type-level defaults, `leave`/`leave with`, type capture `auto[<T>..]`, fully static error monomorphization, compile-time type factories, reflection, and structured `finally` blocks.
+- **From Ada**: explicit representation control, attribute syntax, strong typing, English keywords, contract-based verification.
+- **From Rust**: `Result`-based error handling (without type erasure), `if let`, `match`, block expressions, trait-like generics.
+- **Unique to Posita**: bit-width parameterized integers, orthogonal pointer sizes, type-level defaults with invariants, `leave`/`leave with`, type capture `auto[<T>..]`, fully static error monomorphization, compile-time type factories, reflection, structured `finally` blocks, and a unified contract system.
