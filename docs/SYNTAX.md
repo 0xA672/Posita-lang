@@ -1,11 +1,15 @@
-# Posita Language Syntax (v0.1)
+# Posita Language Syntax (v0.1.1)
+
+> [!NOTE]
+> This document version tracks its own edits. It does **not** correspond to a language specification release.
+> Posita itself is in pre-alpha; the syntax is under active design and may change without notice.
 
 ## Design Philosophy
-Posita is a **ultra-static, systems programming language** where the programmer explicitly *posits* every representation detail: bit widths, pointer sizes, default values, and even optimization policies. It inherits Ada's precision, borrows Rust's modern ergonomics, and introduces its own constructs where they serve clarity.
+Posita is a **ultra-static, systems programming language** where the programmer explicitly *posits* every representation detail: bit widths, pointer sizes, default values, and even error paths. All decisions are made visible in source and enforced at compile time with zero runtime overhead.
 
-- **Explicit over implicit**: No hidden ABI, no integer promotion surprises.
-- **Compile-time over run-time**: Everything that can be done at compile time should be.
-- **Readable as documentation**: Keywords are English words (`def`, `set`, `leave`), not cryptic symbols.
+- **Explicit over implicit**: No hidden ABI, no type-erased errors, no null pointers.
+- **Compile-time over run-time**: Error handling, defaults, and optimizations are resolved statically.
+- **Readable as documentation**: English keywords (`def`, `set`, `leave`, `catch`), not cryptic symbols.
 
 ---
 
@@ -13,7 +17,8 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 
 ### Keywords
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
-`comptime`, `import`, `as`, `true`, `false`, `null`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`
+`comptime`, `import`, `as`, `true`, `false`, `null`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
+`Result`, `Option`, `catch`, `panic`, `unsafe`
 
 `Int`, `UInt`, `Ptr` are built-in type constructors, not reserved words.
 
@@ -46,7 +51,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
   - `size`: type that determines the pointer's own width (e.g., `UInt<16>`).
   - `pointee`: the type it points to.
 - Syntactic sugar: `*T` is a platform-word-sized pointer to `T`.
-- References: `&T` (immutable), `&mut T` (mutable). References are checked at compile time and do not support pointer arithmetic.
+- References: `&T` (immutable), `&mut T` (mutable). References are checked at compile time and do not support pointer arithmetic. No null references are allowed; use `Option<&T>` for nullable semantics.
 
 ### Type-level Default Values
 ```plaintext
@@ -167,6 +172,75 @@ match value {
 
 ---
 
+## Error Handling
+
+Posita treats error handling as a **first-class, statically enforced discipline** with zero hidden cost. It has no exceptions, no `null` pointers, and no type-erased error objects.
+
+### The `Result` Type
+All recoverable errors use `Result<T, E>`, which is a built-in enum:
+```plaintext
+type Result<T, E> = enum {
+    Ok(T),
+    Err(E),
+}
+```
+
+### Propagating Errors with `?`
+Use `?` to propagate the error to the caller. The error type must match the function's declared error type.
+```plaintext
+def read_file(path: &[Byte]) -> Result<String, FileError> {
+    set file = File.open(path)?;   // propagates FileError
+    // ...
+}
+```
+The compiler enforces that every `?` is compatible with the function's error signature. There is no `Box<dyn Error>` or other type-erased errors; the specific error type is always known at compile time, allowing complete monomorphization and zero overhead.
+
+### Handling Errors Locally with `catch`
+`catch` provides pattern-matching on the error value directly after a fallible expression:
+```plaintext
+def process() -> Result<(), ProcessError> {
+    set data = fetch() catch {
+        |NetworkError| {
+            log("network error");
+            leave with ProcessError::NetworkFail;
+        }
+        |ParseError| {
+            leave with ProcessError::BadData;
+        }
+    };
+    // use data
+    return Ok(());
+}
+```
+Inside a `catch` block, you can:
+- Use `leave with <error>` to return an error from the enclosing function.
+- Perform cleanup or logging and then propagate the same error via `?`.
+- Convert the error into a different type and continue.
+
+### Early Return with `leave with`
+`leave with` is a structured, non-local exit that returns an error from the current function. It is only allowed inside `catch` blocks or where the compiler can statically verify that the enclosing function returns `Result`.
+```plaintext
+def example() -> Result<Int<32>, MyError> {
+    set x = dangerous_op() catch {
+        |err| leave with err;   // directly return Err(err)
+    };
+    // ...
+}
+```
+
+### Fatal Errors: `panic`
+For unrecoverable situations (e.g., out of memory, arithmetic overflow in checked mode), Posita provides `panic`. It can only be used within explicitly marked `unsafe` contexts or in `comptime` blocks (where it causes a compilation error). Normal application code should avoid `panic` and use `Result` instead.
+
+### No Null Pointers
+All plain references (`&T`, `&mut T`) are non-nullable. Nullable semantics are expressed explicitly via `Option<&T>`.
+```plaintext
+def maybe_get() -> Option<&Int<32>> {
+    // ...
+}
+```
+
+---
+
 ## Compile-Time Execution
 
 ### comptime Blocks
@@ -184,14 +258,12 @@ comptime def eval_polynomial(coeffs: &[Int<32>], x: Int<32>) -> Int<64> {
 ```
 
 ### Optimization Hooks (advanced)
-Users can interact with the optimizer through a comptime API:
 ```plaintext
 comptime {
     set plan = optimize(target = my_function, strategy = q_learn(config));
     plan.apply();
 }
 ```
-This feature requires compiler support and is opt-in.
 
 ---
 
@@ -209,9 +281,9 @@ from module import item1, item2;
 type Byte = UInt<8> with default = 0x00;
 type BufPtr = Ptr<size = UInt<16>, pointee = Byte>;
 
-def concat(left: &[Byte], right: &[Byte]) -> BufPtr {
+def concat(left: &[Byte], right: &[Byte]) -> Result<BufPtr, AllocError> {
     set total_len = left'len + right'len;
-    set result     = alloc(BufPtr, total_len);
+    set result     = alloc(BufPtr, total_len)?;
     set mut pos    = 0;
 
     for i in 0..left'len {
@@ -221,20 +293,21 @@ def concat(left: &[Byte], right: &[Byte]) -> BufPtr {
 
     for j in 0..right'len {
         if right[j] == 0xFF {
-            leave;   // stop copying on terminator
+            leave;
         }
         result[pos] = right[j];
         pos = pos + 1;
     }
 
-    return result;
+    return Ok(result);
 }
 ```
-This example shows bit-width parameterization, type defaults, `leave`, and attribute syntax working together.
+This example now includes error handling via `?` and `Result`, alongside bit-width parameterization, type defaults, and `leave`.
 
 ---
 
-## Relationship to Ada and Rust
-- From Ada: explicit representation control, attribute syntax, strong typing, English keywords.
-- From Rust: `fn`-like `def` (adapted), block expressions, `match`, module system.
-- Unique: `set`, `leave`, `with default`, bit-width `Int<N>`, type capture `auto[<T>..]`.
+## Relationship to Other Languages
+- **From Ada**: explicit representation control, attribute syntax, strong typing, English keywords.
+- **From Rust**: `Result`-based error handling (but without type erasure), `match`, block expressions.
+- **Unique to Posita**: bit-width parameterized integers, orthogonal pointer sizes, type-level defaults, `leave`/`leave with`, type capture `auto[<T>..]`, and fully static error monomorphization.
+NTAX.md`。
