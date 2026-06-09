@@ -1,4 +1,5 @@
-# Posita Language Syntax (v0.1.1)
+# Posita Language Syntax
+**Document revision: 2026-06-09** (working draft, not a frozen specification)
 
 > [!NOTE]
 > This document version tracks its own edits. It does **not** correspond to a language specification release.
@@ -18,7 +19,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 ### Keywords
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `null`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
-`Result`, `Option`, `catch`, `panic`, `unsafe`
+`Result`, `Option`, `catch`, `panic`, `unsafe`, `if`, `let`, `while`, `let`, `defer`
 
 `Int`, `UInt`, `Ptr` are built-in type constructors, not reserved words.
 
@@ -122,6 +123,21 @@ x = x + 1;
       // ...
   }
   ```
+- **if let** (pattern match shortcut):
+  ```plaintext
+  if let Some(val) = optional_value {
+      // use val
+  } else {
+      // handle None
+  }
+  ```
+  Can also chain multiple conditions: `if x > 0 and let Some(y) = opt { ... }`.
+- **while let**:
+  ```plaintext
+  while let Some(item) = iter.next() {
+      // process item
+  }
+  ```
 - **Loops**:
   ```plaintext
   for item in iterable {
@@ -152,12 +168,23 @@ def function_name(param1: Type1, param2: Type2) -> ReturnType {
 - Default parameter values: `def f(x: Int<32> = 0) { ... }`
 - Return type can be omitted for auto-inference (not recommended for public APIs).
 
-### Pattern Matching (preview)
+### Pattern Matching (full)
 ```plaintext
 match value {
     pattern1 => expression1,
     pattern2 => { statements },
     _ => default,
+}
+```
+
+### Deferred Execution (`defer`)
+A `defer` block is executed at the end of the enclosing scope, regardless of how the scope is exited (normal return, `leave`, or error propagation). Multiple `defer` blocks execute in LIFO order. It is useful for resource cleanup.
+```plaintext
+def process() -> Result<(), Error> {
+    set file = File.open("data.bin")?;
+    defer file.close();
+    // ... operations that may fail ...
+    return Ok(());
 }
 ```
 
@@ -257,6 +284,29 @@ comptime def eval_polynomial(coeffs: &[Int<32>], x: Int<32>) -> Int<64> {
 }
 ```
 
+### Type Factories
+A `comptime` function may return a `type`, enabling code-driven type construction:
+```plaintext
+comptime def make_vector(Elem: type, N: usize) -> type {
+    return [Elem; N];   // or Array<Elem, N>
+}
+
+type Vec4f = make_vector(Float<32>, 4);
+```
+Type factories are evaluated entirely at compile time and can use the full reflection capabilities to generate complex types.
+
+### Compile-Time Reflection (`@typeInfo`)
+Posita provides a built-in `@typeInfo` function, accessible only in `comptime` contexts, to introspect any type's structure:
+```plaintext
+comptime {
+    set info = @typeInfo(MyStruct);
+    for field in info.fields {
+        // generate serialization code
+    }
+}
+```
+This returns a `TypeInfo` enum that describes the type completely (fields, variants, bit widths, etc.), enabling serialization, auto-formatting, and other compile-time code generation.
+
 ### Optimization Hooks (advanced)
 ```plaintext
 comptime {
@@ -281,9 +331,14 @@ from module import item1, item2;
 type Byte = UInt<8> with default = 0x00;
 type BufPtr = Ptr<size = UInt<16>, pointee = Byte>;
 
+comptime def make_buffer(len: usize) -> type {
+    return [Byte; len];
+}
+
 def concat(left: &[Byte], right: &[Byte]) -> Result<BufPtr, AllocError> {
     set total_len = left'len + right'len;
     set result     = alloc(BufPtr, total_len)?;
+    defer if result != null { free(result); }  // optional cleanup
     set mut pos    = 0;
 
     for i in 0..left'len {
@@ -302,11 +357,11 @@ def concat(left: &[Byte], right: &[Byte]) -> Result<BufPtr, AllocError> {
     return Ok(result);
 }
 ```
-This example now includes error handling via `?` and `Result`, alongside bit-width parameterization, type defaults, and `leave`.
+This example now includes `defer`, `?`, `leave`, type factory usage, and bit-width parameterization.
 
 ---
 
 ## Relationship to Other Languages
 - **From Ada**: explicit representation control, attribute syntax, strong typing, English keywords.
-- **From Rust**: `Result`-based error handling (but without type erasure), `match`, block expressions.
-- **Unique to Posita**: bit-width parameterized integers, orthogonal pointer sizes, type-level defaults, `leave`/`leave with`, type capture `auto[<T>..]`, and fully static error monomorphization.
+- **From Rust**: `Result`-based error handling (but without type erasure), `if let`, `match`, block expressions.
+- **Unique to Posita**: bit-width parameterized integers, orthogonal pointer sizes, type-level defaults, `leave`/`leave with`, type capture `auto[<T>..]`, fully static error monomorphization, compile-time type factories and reflection.
