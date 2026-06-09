@@ -310,4 +310,3 @@ This example now includes error handling via `?` and `Result`, alongside bit-wid
 - **From Ada**: explicit representation control, attribute syntax, strong typing, English keywords.
 - **From Rust**: `Result`-based error handling (but without type erasure), `match`, block expressions.
 - **Unique to Posita**: bit-width parameterized integers, orthogonal pointer sizes, type-level defaults, `leave`/`leave with`, type capture `auto[<T>..]`, and fully static error monomorphization.
-NTAX.md`。
