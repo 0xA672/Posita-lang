@@ -11,6 +11,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 - **Explicit over implicit**: No hidden ABI, no type-erased errors, no null pointers, no implicit overflow.
 - **Compile-time over run-time**: Error handling, defaults, optimizations, and reflection are resolved statically.
 - **Readable as documentation**: English keywords (`def`, `set`, `leave`, `catch`), not cryptic symbols.
+- **No undefined behavior**: Every operation either succeeds with defined semantics or is rejected at compile time.
 
 ---
 
@@ -81,10 +82,11 @@ The compiler uses range analysis and type invariants to statically eliminate ove
 - References: `&T` (immutable), `&mut T` (mutable). References are checked at compile time and do not support pointer arithmetic. No null references are allowed; use `Option<&T>` for nullable semantics.
 
 ### Type-level Default Values
+Every type can declare a default value that is automatically assigned to any variable of that type that is not explicitly initialized. This eliminates all “uninitialized variable” bugs.
 ```plaintext
 type MyInt = Int<8> with default = 1;
 ```
-Any variable declared as `MyInt` without an explicit initializer will be automatically initialized to `1`.
+When you write `set x: MyInt;`, the compiler automatically initializes `x` to `1`. The default value **must satisfy any type invariants**; otherwise the compiler will reject the type definition. For large aggregates (arrays, structs), the default initializes every element/member. This guarantee extends to all memory, making Posita programs free of undefined behavior from uninitialized data.
 
 ### Self-Referential Types
 A type may refer to itself through `Self` inside its definition, enabling linked structures without infinite compile-time recursion:
@@ -97,7 +99,7 @@ type ListNode = struct {
 The `Self` keyword resolves to the enclosing type during semantic analysis. For mutually recursive types, separate definitions with forward aliases work as usual.
 
 ### Type Invariants
-A type may define an `invariant` clause that all valid instances must satisfy. The compiler verifies or enforces the invariant at every construction point.
+A type may define an `invariant` clause that all valid instances must satisfy. The compiler verifies or enforces the invariant at every construction point, including default initialization.
 ```plaintext
 type NonZeroInt = exists n: Int<32>
     invariant n != 0;
@@ -131,6 +133,7 @@ Access compile-time properties using `'`:
 - `x'size` – bit width
 - `x'align` – alignment
 - `x'first`, `x'last` – first/last index (for arrays)
+- `T'default` – the default value of type `T` (usable in `comptime`)
 
 ### Type Inference and Capture
 - `set a = 42;` infers `a` as `Int<32>` (default integer width).
@@ -148,7 +151,7 @@ Access compile-time properties using `'`:
 ```plaintext
 set identifier : Type = expression;   // full form
 set identifier = expression;          // type inference
-set identifier : Type;                // uses type's default value
+set identifier : Type;                // uses type's default value (guaranteed initialized)
 ```
 Variables are immutable by default. Use `mut` for mutability:
 ```plaintext
@@ -159,7 +162,7 @@ x = x + 1;
 ### Assignment
 `x = value` (requires `mut`). Compound assignments: `+=`, `-=`, `*=`, etc.
 
-### Control Flow
+### Control Flow (All Structured, No Hidden Jumps)
 - **Conditional**:
   ```plaintext
   if condition {
@@ -470,6 +473,28 @@ This approach preserves explicitness (no hidden allocations) while offering ergo
 
 ---
 
+## Undefined Behavior Prevention
+Posita’s design eliminates entire categories of undefined behavior (UB) that plague C, C++, and even Rust (in `unsafe` code). The following table summarizes key protections.
+
+| UB Category | Prevention Mechanism |
+|-------------|----------------------|
+| **Uninitialized variables** | Type-level defaults guarantee every variable is initialized at declaration. |
+| **Integer overflow (signed)** | Default `trap` policy; configurable per-type/operator; compiler range analysis can statically eliminate checks. |
+| **Division by zero** | Contract `requires b != 0` enforced at compile time or via runtime panic. |
+| **Null pointer dereference** | References are non-null; `Option<&T>` enforces checking before use. |
+| **Dangling pointers** | Borrow checker ensures references never outlive referent; default copy semantics reduce accidental moves. |
+| **Data races** | `&mut T` is exclusive, `&T` is shared; compile-time borrow rules prevent simultaneous mutable access. |
+| **Buffer overflow** | Array access checked via contract or runtime bounds; pointer arithmetic constrained to explicit `Ptr` types. |
+| **Invalid enum values** | Type invariants guarantee only valid variants exist; `as!` cast requires provable compatibility. |
+| **Misaligned pointers** | `Ptr` type carries alignment; safe casts check alignment; `as!` demands proof of alignment. |
+| **Type punning / transmute** | `as!` requires compile-time verification that source and target layouts are compatible; otherwise rejected. |
+| **Infinite loops at compile time** | `comptime` execution bounded by step and memory limits; self-recursive type factories detected. |
+| **Static initialization order** | Compile-time evaluation ensures constant initializers; module-level variables use zero-init or type defaults. |
+
+The compiler can be configured in **strict mode** where any construct that cannot be statically proven safe is rejected. This guarantees that a successfully compiled Posita program is free of the listed UB by construction.
+
+---
+
 ## Complete Example
 ```plaintext
 type Byte = UInt<8> with default = 0x00;
@@ -507,9 +532,9 @@ This example combines bit-width parameterization, type defaults, `?` error propa
 ---
 
 ## Relationship to Other Languages
-- **From Ada**: explicit representation control, attribute syntax, strong typing, English keywords, contract-based verification.
-- **From Rust**: `Result`-based error handling (without type erasure), `if let`, `match`, block expressions, trait-like generics.
-- **Unique to Posita**: bit-width parameterized integers with explicit overflow control, orthogonal pointer sizes, type-level defaults with invariants, `leave`/`leave with`, type capture `auto[<T>..]`, fully static error monomorphization, compile-time type factories, reflection, structured `finally` blocks, and a unified contract system with mathematical semantics.
+- **From Ada**: explicit representation control, attribute syntax, strong typing, English keywords, contract-based verification, default initialization.
+- **From Rust**: `Result`-based error handling (without type erasure), `if let`, `match`, block expressions, trait-like generics, borrow checker.
+- **Unique to Posita**: bit-width parameterized integers with explicit overflow control, orthogonal pointer sizes, type-level defaults with invariants, `leave`/`leave with`, type capture `auto[<T>..]`, fully static error monomorphization, compile-time type factories, reflection, structured `finally` blocks, and systematic elimination of undefined behavior.
 
 ---
 
@@ -520,6 +545,9 @@ A: Ultra-static typing is a paradigm where all representation details and behavi
 
 **Q: Why copy semantics by default? Doesn’t it harm performance?**
 A: Copy semantics ensure variables remain valid after assignment, eliminating “moved-from” states—a crucial property for safety-critical reasoning. Small types (integers, small structs) copy at register speed. For large types, Posita expects references (`&T`) to be used, and standard library containers like `Vector` are non-`Copy` (they implement `Drop`). Explicit `move` is available as an optimization, not the default. Users may also manually implement `Copy` for large types if they accept the cost, preserving explicitness.
+
+**Q: How does Posita’s `with default` compare to Rust’s `Default` trait?**
+A: Rust’s `Default` is a trait that must be explicitly called (`T::default()`); variables are not automatically initialized. Posita’s `with default` is a type-level attribute that automatically initializes every variable of that type at declaration. Furthermore, the default value is checked against type invariants, guaranteeing that no variable ever holds an invalid value. This eliminates all “use of uninitialized variable” UB without any boilerplate.
 
 **Q: Why so many error handling keywords (`?`, `catch`, `leave with`, `finally`)? Isn’t it complex?**
 A: Each construct has a distinct, orthogonal role: `?` for propagation, `catch` for local handling with pattern matching, `leave with` for structured early exit from a function, and `finally` for unconditional cleanup. Unlike Rust, Posita avoids `Box<dyn Error>` and type erasure, keeping error types monomorphized. The apparent “complexity” is the price of making every error path explicit and auditable, which is essential in safety-critical code.
@@ -553,3 +581,6 @@ A: Yes, by explicitly implementing the `Copy` trait. The compiler will not autom
 
 **Q: Doesn’t `?` automatically converting errors via `From` hide the error path?**
 A: No, because all `From` implementations are statically known and visible to tooling. You can always inspect the complete error conversion chain via `posita check --show-error-paths` or IDE features. This provides the convenience of automatic conversion without sacrificing auditability.
+
+**Q: How does Posita eliminate undefined behavior?**
+A: By making every potentially dangerous operation either statically provable or explicitly checked. Uninitialized variables are impossible due to type defaults. Overflow, division by zero, and null dereferences are trapped or prevented by contracts. Data races are eliminated by borrow checking. The strict mode rejects any code that cannot be proven safe at compile time.
