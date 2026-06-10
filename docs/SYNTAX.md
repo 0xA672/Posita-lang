@@ -20,7 +20,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
 `Result`, `Option`, `catch`, `panic`, `unsafe`, `let`, `finally`,
-`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`
+`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`
 
 `Int`, `UInt`, `Ptr` are built-in type constructors, not reserved words.
 
@@ -44,7 +44,15 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 ## Type System
 
 ### Value Semantics
-Posita defaults to **copy semantics** for all types that implement the `Copy` trait (automatically derived for small, bit-fixed types like `Int<N>`, structs of `Copy` fields, etc.). Copying creates an independent value with the same representation. Large types like `Vector<T>` are **not** `Copy` and must be explicitly cloned or passed by reference. This choice eliminates "moved-from" invalid states and simplifies reasoning in safety-critical contexts. Explicit `move` semantics are available via the `move` keyword for ownership transfer optimization.
+Posita defaults to **copy semantics** for all types that implement the `Copy` trait. A type automatically derives `Copy` if it consists only of integers, floats, other `Copy` types, and does **not** implement `Drop`. This ensures that “copy is a trivial bitwise replication” and eliminates “moved-from” invalid states. Large types like `Vector<T>` are **not** `Copy` because they manage resources (they implement `Drop`). Explicit `move` semantics are available via the `move` keyword for ownership transfer optimization.
+
+To prevent automatic `Copy` derivation for a type that would otherwise qualify, either implement `Drop` (even with an empty body) or use the `@no_copy` attribute:
+```plaintext
+@no_copy
+type LargeStruct = struct { data: [Int<8>; 1024] };
+```
+
+Manual implementation of `Copy` is allowed for types where bitwise replication is semantically sound, even if large. By doing so, the programmer explicitly accepts the performance characteristics.
 
 ### Bit-width Parameterized Integers
 - Signed: `Int<bits>`, `bits` must be compile-time constant, 1..64.
@@ -52,7 +60,7 @@ Posita defaults to **copy semantics** for all types that implement the `Copy` tr
 - Example: `Int<13>`, `UInt<8>`.
 
 ### Overflow Behavior
-Integer overflow is never undefined. The default overflow policy is `trap` (compile-time error in strict mode, runtime panic otherwise). Programmers can override this at the type level:
+Integer overflow is never undefined. The default overflow policy is `trap` (compile-time error in strict mode, runtime panic otherwise). Programmers can override at the type level:
 ```plaintext
 type WrapCount = Int<32> with overflow = wrap;     // two's complement wrap
 type SatCount  = Int<32> with overflow = saturate;  // saturation
@@ -77,6 +85,16 @@ The compiler uses range analysis and type invariants to statically eliminate ove
 type MyInt = Int<8> with default = 1;
 ```
 Any variable declared as `MyInt` without an explicit initializer will be automatically initialized to `1`.
+
+### Self-Referential Types
+A type may refer to itself through `Self` inside its definition, enabling linked structures without infinite compile-time recursion:
+```plaintext
+type ListNode = struct {
+    value: Int<32>,
+    next: Option<Ptr<size=UInt<64>, pointee=Self>>,
+};
+```
+The `Self` keyword resolves to the enclosing type during semantic analysis. For mutually recursive types, separate definitions with forward aliases work as usual.
 
 ### Type Invariants
 A type may define an `invariant` clause that all valid instances must satisfy. The compiler verifies or enforces the invariant at every construction point.
@@ -208,15 +226,18 @@ match value {
 
 ### Finally Blocks for Cleanup
 A `finally` block attached to a function body guarantees execution of cleanup logic after the function exits, regardless of whether it exits via `return`, `leave`, `leave with`, or `?` propagation. The block is placed after the function body, making all exit paths visible and structured.
+
+**Restrictions**: The `finally` block must not contain `?`, `leave with`, or any operation that could change the function’s return value. It is intended for **infallible** cleanup only (e.g., memory release, resetting hardware). Fallible cleanup must be handled explicitly before the `finally` block or within it by silently logging the error (using `catch` without propagation).
 ```plaintext
 def process() -> Result<(), Error> {
     set file = File.open("data.bin")?;
     // ... operations that may fail ...
     return Ok(());
 } finally {
-    if file.is_open() {
-        file.close();
-    }
+    // infallible cleanup only
+    file.release_buffer();
+    // If close may fail, handle before finally or log silently:
+    // file.close() catch { |e| log(e) };
 }
 ```
 Multiple `finally` blocks are not allowed; put all cleanup in a single block.
@@ -246,7 +267,7 @@ type Result<T, E> = enum {
 ```
 
 ### Propagating Errors with `?`
-Use `?` to propagate the error to the caller. The error type must match the function's declared error type.
+Use `?` to propagate the error to the caller. The error type must match the function's declared error type. If the error types differ but a `From` implementation exists, the compiler automatically inserts the conversion (see “Explicit Error Paths” below).
 ```plaintext
 def read_file(path: &[Byte]) -> Result<String, FileError> {
     set file = File.open(path)?;   // propagates FileError
@@ -288,6 +309,9 @@ def example() -> Result<Int<32>, MyError> {
 }
 ```
 
+### Explicit Error Paths and `From` Conversions
+To manage error type combinatorics, Posita allows explicit `impl From<SpecificError> for MyError` declarations. The `?` operator will automatically apply such conversions when the error types differ. This is **not** implicit magic: all possible conversions are statically known, and tooling can display them (via `posita check --show-error-paths` or IDE hover). The conversion must be a pure function; its definition serves as documentation of the error path. There is no requirement to write `.map_err(Into::into)?` unless the programmer desires explicitness at the call site.
+
 ### Fatal Errors: `panic`
 For unrecoverable situations (e.g., out of memory, arithmetic overflow in checked mode), Posita provides `panic`. It can only be used within explicitly marked `unsafe` contexts or in `comptime` blocks (where it causes a compilation error). Normal application code should avoid `panic` and use `Result` instead.
 
@@ -308,10 +332,12 @@ Posita supports design-by-contract through `requires` and `ensures` clauses, and
 ### Function Contracts
 - `requires`: a precondition that must hold when the function is called. The compiler may prove it statically or insert a runtime check (depending on safety mode).
 - `ensures`: a postcondition that must hold upon return. The compiler attempts to verify it; unprovable postconditions cause a compile error in strict mode.
+
+**Important**: Contract expressions are evaluated in the **mathematical integer domain** (ideal precision), not under the underlying type’s overflow policy. This ensures that the contract describes logical truth irrespective of machine arithmetic. If the type uses `overflow = wrap`, the contract must still hold mathematically; otherwise the compiler will reject it (or issue a warning in non-strict mode). For wrap semantics, consider using range contracts instead of exact algebraic equations.
 ```plaintext
 def divide(a: Int<32>, b: Int<32>) -> Int<32>
     requires b != 0
-    ensures result * b == a
+    ensures result * b == a   // uses mathematical integers, independent of overflow policy
 {
     return a / b;
 }
@@ -396,6 +422,8 @@ type Vec4f = make_vector(Float<32>, 4);
 ```
 Type factories are evaluated entirely at compile time and can use the full reflection capabilities to generate complex types.
 
+**Safety and termination**: `comptime` execution is subject to a configurable step limit and memory budget to prevent infinite recursion. Directly self-recursive type factories that do not have a terminating base case are detected and reported as a compile-time error. For self-referential types, use the `Self` keyword inside type definitions rather than type factories.
+
 ### Compile-Time Reflection (`@typeInfo`)
 Posita provides a built-in `@typeInfo` function, accessible only in `comptime` contexts, to introspect any type's structure:
 ```plaintext
@@ -470,6 +498,7 @@ def concat(left: &[Byte], right: &[Byte]) -> Result<BufPtr, AllocError>
 
     return Ok(result);
 } finally {
+    // infallible cleanup only
     // free_any_temp();
 }
 ```
@@ -480,7 +509,7 @@ This example combines bit-width parameterization, type defaults, `?` error propa
 ## Relationship to Other Languages
 - **From Ada**: explicit representation control, attribute syntax, strong typing, English keywords, contract-based verification.
 - **From Rust**: `Result`-based error handling (without type erasure), `if let`, `match`, block expressions, trait-like generics.
-- **Unique to Posita**: bit-width parameterized integers with explicit overflow control, orthogonal pointer sizes, type-level defaults with invariants, `leave`/`leave with`, type capture `auto[<T>..]`, fully static error monomorphization, compile-time type factories, reflection, structured `finally` blocks, and a unified contract system.
+- **Unique to Posita**: bit-width parameterized integers with explicit overflow control, orthogonal pointer sizes, type-level defaults with invariants, `leave`/`leave with`, type capture `auto[<T>..]`, fully static error monomorphization, compile-time type factories, reflection, structured `finally` blocks, and a unified contract system with mathematical semantics.
 
 ---
 
@@ -490,19 +519,19 @@ This example combines bit-width parameterization, type defaults, `?` error propa
 A: Ultra-static typing is a paradigm where all representation details and behavioral guarantees are resolved at compile time. Unlike dependent types, Posita only allows types to depend on compile-time constants, avoiding runtime evidence. Unlike refinement types, Posita enforces that all checks (including type invariants and contracts) must be provable at compile time in strict mode, leaving zero runtime validation overhead. It combines the precision of Ada’s representation clauses with Zig’s compile-time reflection, but integrates them into a single, coherent type system.
 
 **Q: Why copy semantics by default? Doesn’t it harm performance?**
-A: Copy semantics ensure variables remain valid after assignment, eliminating “moved-from” states—a crucial property for safety-critical reasoning. Small types (integers, small structs) copy at register speed. For large types, Posita expects references (`&T`) to be used, and standard library containers like `Vector` are non-`Copy`. Explicit `move` is available as an optimization, not the default. This design prioritizes local reasoning and compliance with Ada’s value-semantics heritage.
+A: Copy semantics ensure variables remain valid after assignment, eliminating “moved-from” states—a crucial property for safety-critical reasoning. Small types (integers, small structs) copy at register speed. For large types, Posita expects references (`&T`) to be used, and standard library containers like `Vector` are non-`Copy` (they implement `Drop`). Explicit `move` is available as an optimization, not the default. Users may also manually implement `Copy` for large types if they accept the cost, preserving explicitness.
 
 **Q: Why so many error handling keywords (`?`, `catch`, `leave with`, `finally`)? Isn’t it complex?**
 A: Each construct has a distinct, orthogonal role: `?` for propagation, `catch` for local handling with pattern matching, `leave with` for structured early exit from a function, and `finally` for unconditional cleanup. Unlike Rust, Posita avoids `Box<dyn Error>` and type erasure, keeping error types monomorphized. The apparent “complexity” is the price of making every error path explicit and auditable, which is essential in safety-critical code.
 
 **Q: Can Posita’s error handling lead to combinatoric explosion of error types?**
-A: Yes, but Posita provides three mitigations: (1) `From` trait implementations allow automatic conversion to a common application error type via `?`; (2) `catch` blocks can immediately convert diverse errors into a uniform type; (3) `comptime` can automatically derive error enums and their `From` implementations. These tools keep the explosion manageable without sacrificing static visibility.
+A: Yes, but Posita provides three mitigations: (1) `From` trait implementations allow automatic conversion to a common application error type via `?`; (2) `catch` blocks can immediately convert diverse errors into a uniform type; (3) `comptime` can automatically derive error enums and their `From` implementations. These tools keep the explosion manageable without sacrificing static visibility. All conversions are statically visible to tooling.
 
 **Q: How do you define overflow behavior? Will it slow down programs?**
 A: Overflow is never undefined. The default is `trap` (compile-time error or runtime panic). Programmers can override with `overflow = wrap` or `overflow = saturate` at the type level, or use operator suffixes like `+%` for wrap. The compiler performs extensive range analysis based on type invariants and contracts, statically eliminating overflow checks when it can prove overflow impossible. This gives safety without unnecessary runtime cost.
 
 **Q: Does Posita need procedural macros? Why not?**
-A: No. Procedural macros are powerful but introduce non-local, hard-to-debug code generation, undermining Posita’s explicit-source philosophy. Posita’s `comptime` combined with reflection (`@typeInfo`) and type factories already covers all typical macro use cases (serialization, DSLs, boilerplate generation) within a type-checked, debuggable, safe environment.
+A: No. Procedural macros introduce non-local, hard-to-debug code generation, undermining Posita’s explicit-source philosophy. Posita’s `comptime` combined with reflection (`@typeInfo`) and type factories already covers all typical macro use cases (serialization, DSLs, boilerplate generation) within a type-checked, debuggable, safe environment.
 
 **Q: How do I initialize a dynamic container like `Vector` with elements? Is there list initialization?**
 A: Posita rejects implicit conversion from array literals to dynamic containers to avoid hidden allocations. Instead, standard library provides explicit constructors like `Vector::from_array`. For ergonomics, `comptime` functions with variable compile-time arguments (e.g., `vec(1,2,3)`) expand into explicit push operations, maintaining transparency and zero-cost abstraction.
@@ -510,5 +539,17 @@ A: Posita rejects implicit conversion from array literals to dynamic containers 
 **Q: Why does Posita use `def` and `set` instead of `fn` and `let`?**
 A: `def` (define) and `set` (posit) reinforce the language’s core metaphor: everything is an explicit “positing” of a definition or a setting of a value. These keywords are consistent with the English-readable style inherited from Ada and avoid overloading symbols.
 
-**Q: Is Posita suitable for embedded systems with limited memory?**
-A: Absolutely. The bit-width parameterized integers, orthogonal pointer sizes, and lack of runtime type information mean the compiler generates precisely the memory layout you specify. There is no garbage collector, no hidden metadata, and no runtime type checks beyond what you explicitly ask for (e.g., overflow traps). This gives C-level control with much stronger safety guarantees.
+**Q: How does Posita prevent infinite loops in type factories?**
+A: Compile-time evaluation is bounded by step and memory limits, and the compiler detects direct self-recursive type factories. For self-referential types, the `Self` keyword provides a safe and explicit way to express recursion without risking non-termination.
+
+**Q: Do contracts work with wrapping overflow types?**
+A: Contracts are evaluated using mathematical integer arithmetic, independent of the underlying type’s overflow policy. If a contract cannot hold under the chosen policy (e.g., `ensures result * b == a` with `overflow = wrap`), the compiler will reject it. In such cases, use range constraints or switch to `overflow = trap`.
+
+**Q: What happens if a `finally` block tries to return an error?**
+A: `finally` blocks are infallible by design. Using `?` or `leave with` inside them is a compile-time error. Fallible cleanup must be performed outside the `finally` block or logged silently without altering the function’s return value.
+
+**Q: Can I make a large struct `Copy`?**
+A: Yes, by explicitly implementing the `Copy` trait. The compiler will not automatically derive `Copy` for types that implement `Drop`, but you can opt in manually. This makes the copy cost visible in the type signature, and you accept responsibility for the performance impact.
+
+**Q: Doesn’t `?` automatically converting errors via `From` hide the error path?**
+A: No, because all `From` implementations are statically known and visible to tooling. You can always inspect the complete error conversion chain via `posita check --show-error-paths` or IDE features. This provides the convenience of automatic conversion without sacrificing auditability.
