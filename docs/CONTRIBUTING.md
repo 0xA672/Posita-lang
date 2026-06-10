@@ -11,7 +11,7 @@ Be kind, respectful, and constructive. We aim to build a community where everyon
 ## How You Can Help Right Now
 
 ### 1. Discuss the Language Design
-- Read the [language syntax document](docs/SYNTAX.md).
+- Read the [language syntax document](SYNTAX.md).
 - Join [GitHub Discussions](https://github.com/0xA672/Posita-lang/discussions) to ask questions, critique the design, or suggest improvements.
 - Look for open issues labeled `design-discussion`.
 
