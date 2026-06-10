@@ -6,10 +6,10 @@
 > Posita itself is in pre-alpha; the syntax is under active design and may change without notice.
 
 ## Design Philosophy
-Posita is a **ultra-static, systems programming language** where the programmer explicitly *posits* every representation detail: bit widths, pointer sizes, default values, and error paths. All decisions are made visible in source and enforced at compile time with zero runtime overhead.
+Posita is a **ultra-static, systems programming language** where the programmer explicitly *posits* every representation detail: bit widths, pointer sizes, default values, error paths, and even overflow behavior. All decisions are made visible in source and enforced at compile time with zero runtime overhead.
 
-- **Explicit over implicit**: No hidden ABI, no type-erased errors, no null pointers.
-- **Compile-time over run-time**: Error handling, defaults, and optimizations are resolved statically.
+- **Explicit over implicit**: No hidden ABI, no type-erased errors, no null pointers, no implicit overflow.
+- **Compile-time over run-time**: Error handling, defaults, optimizations, and reflection are resolved statically.
 - **Readable as documentation**: English keywords (`def`, `set`, `leave`, `catch`), not cryptic symbols.
 
 ---
@@ -20,7 +20,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
 `Result`, `Option`, `catch`, `panic`, `unsafe`, `let`, `finally`,
-`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`
+`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`
 
 `Int`, `UInt`, `Ptr` are built-in type constructors, not reserved words.
 
@@ -50,6 +50,20 @@ Posita defaults to **copy semantics** for all types that implement the `Copy` tr
 - Signed: `Int<bits>`, `bits` must be compile-time constant, 1..64.
 - Unsigned: `UInt<bits>`.
 - Example: `Int<13>`, `UInt<8>`.
+
+### Overflow Behavior
+Integer overflow is never undefined. The default overflow policy is `trap` (compile-time error in strict mode, runtime panic otherwise). Programmers can override this at the type level:
+```plaintext
+type WrapCount = Int<32> with overflow = wrap;     // two's complement wrap
+type SatCount  = Int<32> with overflow = saturate;  // saturation
+type StrictCount = Int<32> with overflow = trap;    // trap (default)
+```
+Or at the operator level with suffixes:
+- `+%`, `-%`, `*%` : wrap
+- `+?`, `-?`, `*?` : saturate
+- `+!`, `-!`, `*!` : trap (assert no overflow)
+
+The compiler uses range analysis and type invariants to statically eliminate overflow checks where possible.
 
 ### Pointers and References
 - Raw pointer type: `Ptr<size = SizeType, pointee = PointeeType>`
@@ -208,7 +222,7 @@ def process() -> Result<(), Error> {
 Multiple `finally` blocks are not allowed; put all cleanup in a single block.
 
 ### Expressions
-- Arithmetic: `+`, `-`, `*`, `/`, `%`
+- Arithmetic: `+`, `-`, `*`, `/`, `%` (with optional overflow suffixes `%`, `?`, `!`)
 - Bitwise: `&`, `|`, `^`, `<<`, `>>`, `~`
 - Logical: `and`, `or`, `not`
 - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
@@ -413,6 +427,21 @@ from module import item1, item2;
 
 ---
 
+## Standard Library Initialization Philosophy
+Posita avoids implicit conversions between compound literals and dynamic containers. Instead, standard library types provide explicit constructors. For convenient container initialization, `comptime` functions with variable compile-time arguments are used:
+```plaintext
+comptime def vec<T>(...args: T) -> Vector<T> {
+    set v = Vector::with_capacity(args'len);
+    for a in args { v.push(a); }
+    return v;
+}
+
+set v = vec(1, 2, 3);  // Creates Vector<Int<32>> via explicit function
+```
+This approach preserves explicitness (no hidden allocations) while offering ergonomics through compile-time code generation.
+
+---
+
 ## Complete Example
 ```plaintext
 type Byte = UInt<8> with default = 0x00;
@@ -451,4 +480,35 @@ This example combines bit-width parameterization, type defaults, `?` error propa
 ## Relationship to Other Languages
 - **From Ada**: explicit representation control, attribute syntax, strong typing, English keywords, contract-based verification.
 - **From Rust**: `Result`-based error handling (without type erasure), `if let`, `match`, block expressions, trait-like generics.
-- **Unique to Posita**: bit-width parameterized integers, orthogonal pointer sizes, type-level defaults with invariants, `leave`/`leave with`, type capture `auto[<T>..]`, fully static error monomorphization, compile-time type factories, reflection, structured `finally` blocks, and a unified contract system.
+- **Unique to Posita**: bit-width parameterized integers with explicit overflow control, orthogonal pointer sizes, type-level defaults with invariants, `leave`/`leave with`, type capture `auto[<T>..]`, fully static error monomorphization, compile-time type factories, reflection, structured `finally` blocks, and a unified contract system.
+
+---
+
+## Design Q&A: Frequently Asked Questions
+
+**Q: Why “ultra-static typing”? How is it different from dependent types or refinement types?**
+A: Ultra-static typing is a paradigm where all representation details and behavioral guarantees are resolved at compile time. Unlike dependent types, Posita only allows types to depend on compile-time constants, avoiding runtime evidence. Unlike refinement types, Posita enforces that all checks (including type invariants and contracts) must be provable at compile time in strict mode, leaving zero runtime validation overhead. It combines the precision of Ada’s representation clauses with Zig’s compile-time reflection, but integrates them into a single, coherent type system.
+
+**Q: Why copy semantics by default? Doesn’t it harm performance?**
+A: Copy semantics ensure variables remain valid after assignment, eliminating “moved-from” states—a crucial property for safety-critical reasoning. Small types (integers, small structs) copy at register speed. For large types, Posita expects references (`&T`) to be used, and standard library containers like `Vector` are non-`Copy`. Explicit `move` is available as an optimization, not the default. This design prioritizes local reasoning and compliance with Ada’s value-semantics heritage.
+
+**Q: Why so many error handling keywords (`?`, `catch`, `leave with`, `finally`)? Isn’t it complex?**
+A: Each construct has a distinct, orthogonal role: `?` for propagation, `catch` for local handling with pattern matching, `leave with` for structured early exit from a function, and `finally` for unconditional cleanup. Unlike Rust, Posita avoids `Box<dyn Error>` and type erasure, keeping error types monomorphized. The apparent “complexity” is the price of making every error path explicit and auditable, which is essential in safety-critical code.
+
+**Q: Can Posita’s error handling lead to combinatoric explosion of error types?**
+A: Yes, but Posita provides three mitigations: (1) `From` trait implementations allow automatic conversion to a common application error type via `?`; (2) `catch` blocks can immediately convert diverse errors into a uniform type; (3) `comptime` can automatically derive error enums and their `From` implementations. These tools keep the explosion manageable without sacrificing static visibility.
+
+**Q: How do you define overflow behavior? Will it slow down programs?**
+A: Overflow is never undefined. The default is `trap` (compile-time error or runtime panic). Programmers can override with `overflow = wrap` or `overflow = saturate` at the type level, or use operator suffixes like `+%` for wrap. The compiler performs extensive range analysis based on type invariants and contracts, statically eliminating overflow checks when it can prove overflow impossible. This gives safety without unnecessary runtime cost.
+
+**Q: Does Posita need procedural macros? Why not?**
+A: No. Procedural macros are powerful but introduce non-local, hard-to-debug code generation, undermining Posita’s explicit-source philosophy. Posita’s `comptime` combined with reflection (`@typeInfo`) and type factories already covers all typical macro use cases (serialization, DSLs, boilerplate generation) within a type-checked, debuggable, safe environment.
+
+**Q: How do I initialize a dynamic container like `Vector` with elements? Is there list initialization?**
+A: Posita rejects implicit conversion from array literals to dynamic containers to avoid hidden allocations. Instead, standard library provides explicit constructors like `Vector::from_array`. For ergonomics, `comptime` functions with variable compile-time arguments (e.g., `vec(1,2,3)`) expand into explicit push operations, maintaining transparency and zero-cost abstraction.
+
+**Q: Why does Posita use `def` and `set` instead of `fn` and `let`?**
+A: `def` (define) and `set` (posit) reinforce the language’s core metaphor: everything is an explicit “positing” of a definition or a setting of a value. These keywords are consistent with the English-readable style inherited from Ada and avoid overloading symbols.
+
+**Q: Is Posita suitable for embedded systems with limited memory?**
+A: Absolutely. The bit-width parameterized integers, orthogonal pointer sizes, and lack of runtime type information mean the compiler generates precisely the memory layout you specify. There is no garbage collector, no hidden metadata, and no runtime type checks beyond what you explicitly ask for (e.g., overflow traps). This gives C-level control with much stronger safety guarantees.
