@@ -1,5 +1,5 @@
 # Posita Language Syntax
-**Document revision: 2026-06-10** (working draft, not a frozen specification)
+**Document revision: 2026-06-11** (working draft, not a frozen specification)
 
 > [!NOTE]
 > This document version tracks its own edits. It does **not** correspond to a language specification release.
@@ -21,7 +21,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
 `Result`, `Option`, `catch`, `panic`, `unsafe`, `let`, `finally`,
-`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`
+`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`
 
 `Int`, `UInt`, `Ptr` are built-in type constructors, not reserved words.
 
@@ -136,6 +136,27 @@ When a value of such a type is constructed, the compiler statically proves the i
   }
   ```
 
+### Layout Control Attributes
+Posita provides fine-grained attributes to control memory layout, essential for hardware registers, network protocols, and cross-platform serialization.
+
+- **Endianness**: `@endian(little)` or `@endian(big)` applied to integer types, structs, or individual fields. Defaults to platform endianness if not specified.
+- **Bit order within a packed struct**: `@bit_order(lsb_to_msb)` or `@bit_order(msb_to_lsb)`, controlling the order in which bit fields fill bytes.
+- **Alignment**: `@align(N)` overrides natural alignment. `N` must be a power of two.
+- **Padding**: `@pad(byte_count)` inserts explicit padding bytes inside a struct.
+
+Example:
+```plaintext
+@packed @endian(big) @bit_order(msb_to_lsb)
+type IPv4Header = struct {
+    version: UInt<4>,
+    ihl:     UInt<4>,
+    dscp:    UInt<6>,
+    ecn:     UInt<2>,
+    // ...
+};
+```
+These attributes are part of the type definition and enforced by the compiler, guaranteeing that the memory representation matches the specification exactly.
+
 ### Type Attributes
 Access compile-time properties using `'`:
 - `x'len` – length of array/slice
@@ -229,6 +250,177 @@ Posita can model kernel operations, but confines them to explicitly marked `unsa
 - Self-modifying code or dynamically generated code — the semantics of such operations transcend Posita's static type system. They can only be implemented in `unsafe` via raw pointers and inline assembly.
 
 **Posita's "describable" boundary** is: **All operations can be implemented in `unsafe`, but safe code can only access those operations proven safe by types and contracts.** For kernels, a significant portion of core logic (page table management, interrupt handling) will be in `unsafe`, but Posita's type system and contracts make this `unsafe` code more structured and auditable than C kernel code. Posita can dive as deep as C, but its safety boundary is clearer and more verifiable.
+
+---
+
+## Concurrency Model
+Posita provides a **structured, statically verifiable concurrency model** suited for real-time and safety-critical systems. It avoids unconstrained threads or actors, favoring tasks and channels with optional `async`/`await` for non-blocking operations.
+
+### Tasks
+The basic unit of concurrency is a **task**, similar to Ada tasks or Rust threads. Each task has its own stack and runs independently. Tasks are created by instantiating a `task` block:
+```plaintext
+set worker = task {
+    // code executing in a new task
+    loop {
+        // ...
+    }
+};
+```
+Tasks do not share memory by default; data is transferred via channels. The borrow checker prevents data races on shared references between tasks.
+
+### Channels
+Communication between tasks occurs through typed, bounded, synchronous **channels**.
+```plaintext
+set (sender, receiver) = Channel<Int<32>>::new(16); // buffer size 16
+```
+- `sender.send(value)` – blocks if full.
+- `receiver.recv()` – blocks if empty, returns `Option<Int<32>>` to handle closure.
+Channels can carry contracts, e.g., `requires not empty` for `recv`.
+
+### `async`/`await` for Non-Blocking Operations
+For I/O or waiting on channels without blocking a system thread, Posita introduces **`async` functions** and **`await`** expressions. An `async` function returns a `Future<T>` type.
+```plaintext
+async def fetch_data(url: &[Byte]) -> Result<Data, Error> {
+    // ...
+}
+
+def main() -> Result<(), Error> {
+    set future = fetch_data("http://example.com");
+    set data = await future?; // suspends current task until ready
+    // ...
+}
+```
+The `await` expression can only appear inside an `async` function or a task. The compiler enforces that `async` functions are called within an executor context. This "colouring" ensures that asynchronous behavior is always visible in function signatures.
+
+### Interrupts as Tasks
+Hardware interrupts are modeled as special tasks with maximum priority. They are defined using the `@interrupt` attribute and must follow strict rules (no allocation, finite execution).
+```plaintext
+@interrupt(irq = 14)
+def timer_handler() {
+    // must be non-blocking, no heap usage
+}
+```
+
+### Why Not Actors?
+Actor models (Erlang, Akka) introduce unconstrained message queues and non-deterministic message ordering, which complicate WCET analysis and static verification. Posita's bounded channels and explicit task communication preserve determinism where possible and allow for worst-case analysis.
+
+---
+
+## Modules and Imports
+Posita's module system is file-based and designed for clarity and closed-world verification. Every source file is a module, named by its file path relative to the project root (with `::` as separator). The directory `mod.ps` represents the parent module.
+
+### Visibility
+All symbols (functions, types, constants) are **private by default**. Use the `pub` keyword to make them visible to other modules.
+```plaintext
+// io.ps
+pub def puts(msg: &[Byte]) { ... }
+def helper() { ... } // private
+```
+
+### Importing
+- **Module import**: `import std::io;` — then use `io::puts(...)`.
+- **Alias**: `import std::io as my_io;` — use `my_io::puts(...)`.
+- **Selective import**: `from std::io import { puts, File };` — direct use of `puts(...)`.
+- **Nested paths**: `import std::{io, fs};` — imports both `io` and `fs`.
+- **Wildcard import is prohibited**: `import *` is illegal to prevent namespace pollution and preserve traceability.
+
+### Package Layout
+A Posita project is defined by a `posita.toml` manifest:
+```toml
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies]
+std = { path = "std" }
+```
+The compiler resolves the full dependency graph at compile time, enabling whole-program analysis and strict adherence to the closed-world assumption (configurable to allow external C libraries).
+
+---
+
+## Language Versioning and Deprecation
+Posita adopts an **edition-based versioning** scheme to allow language evolution without breaking existing code.
+
+### Editions
+Each source file declares its edition at the top:
+```plaintext
+edition = "2026";
+```
+The compiler interprets syntax and semantics according to that edition. Multiple editions can coexist within the same project; modules compiled with different editions can interoperate via a stable ABI. The edition is chosen per crate in `posita.toml`, defaulting to the latest stable.
+
+### Deprecation
+Functions, types, modules, or individual features can be marked as deprecated using the `@deprecated` attribute:
+```plaintext
+@deprecated("Use `new_method` instead")
+def old_method() { ... }
+```
+Using a deprecated item produces a compiler warning. In Strict Mode, warnings about deprecation can be elevated to errors. Deprecated features are guaranteed to remain available for at least one full edition cycle before being removed.
+
+---
+
+## Experimental Features
+To allow innovation without compromising stability, Posita supports **`@experimental`** attributes.
+
+```plaintext
+@experimental
+type NewInteger = Int<128>; // 128-bit integers are experimental
+```
+Any use of an experimental item triggers a compiler warning. Code using experimental features can only be compiled when the `--enable-experimental` flag is passed. In Strict Mode, experimental features are forbidden entirely unless explicitly allowed. Experimental features have no stability guarantees and may change or be removed in any subsequent release.
+
+---
+
+## Compile-Time Execution
+
+### comptime Blocks
+```plaintext
+comptime {
+    // code executed during compilation
+}
+```
+
+### comptime Functions
+```plaintext
+comptime def eval_polynomial(coeffs: &[Int<32>], x: Int<32>) -> Int<64> {
+    // ...
+}
+```
+
+### Type Factories
+A `comptime` function may return a `type`, enabling code-driven type construction:
+```plaintext
+comptime def make_vector(Elem: type, N: usize) -> type {
+    return [Elem; N];
+}
+
+type Vec4f = make_vector(Float<32>, 4);
+```
+Type factories are evaluated entirely at compile time and can use the full reflection capabilities to generate complex types.
+
+**Safety and termination**: `comptime` execution is subject to a configurable step limit and memory budget to prevent infinite recursion. Directly self-recursive type factories that do not have a terminating base case are detected and reported as a compile-time error. For self-referential types, use the `Self` keyword inside type definitions rather than type factories.
+
+### Contract Verification for comptime Functions
+A `comptime` function can itself carry `requires`/`ensures` contracts. When such a function is evaluated at compile time, the compiler must verify that the call arguments satisfy the precondition and that the function body upholds the postcondition. This verification shares the same SMT solver and time budget as regular function contracts. If the solver times out in strict mode, the compilation fails with a request to simplify the contract or add intermediate assertions; in normal mode, the function may be marked `@trusted` to suppress the proof obligation. Comptime function contracts are typically easier to prove because arguments are compile-time constants.
+
+### Compile-Time Reflection (`@typeInfo`)
+Posita provides a built-in `@typeInfo` function, accessible only in `comptime` contexts, to introspect any type's structure:
+```plaintext
+comptime {
+    set info = @typeInfo(MyStruct);
+    for field in info.fields {
+        // generate serialization code
+    }
+}
+```
+This returns a `TypeInfo` enum that describes the type completely (fields, variants, bit widths, etc.), enabling serialization, auto-formatting, and other compile-time code generation.
+
+### Optimization Hooks (advanced)
+```plaintext
+comptime {
+    set plan = optimize(target = my_function, strategy = q_learn(config));
+    plan.apply();
+}
+```
 
 ---
 
@@ -485,69 +677,6 @@ Constraint blocks can include any bound allowed in a `where` clause, including n
 
 ---
 
-## Compile-Time Execution
-
-### comptime Blocks
-```plaintext
-comptime {
-    // code executed during compilation
-}
-```
-
-### comptime Functions
-```plaintext
-comptime def eval_polynomial(coeffs: &[Int<32>], x: Int<32>) -> Int<64> {
-    // ...
-}
-```
-
-### Type Factories
-A `comptime` function may return a `type`, enabling code-driven type construction:
-```plaintext
-comptime def make_vector(Elem: type, N: usize) -> type {
-    return [Elem; N];
-}
-
-type Vec4f = make_vector(Float<32>, 4);
-```
-Type factories are evaluated entirely at compile time and can use the full reflection capabilities to generate complex types.
-
-**Safety and termination**: `comptime` execution is subject to a configurable step limit and memory budget to prevent infinite recursion. Directly self-recursive type factories that do not have a terminating base case are detected and reported as a compile-time error. For self-referential types, use the `Self` keyword inside type definitions rather than type factories.
-
-### Contract Verification for comptime Functions
-A `comptime` function can itself carry `requires`/`ensures` contracts. When such a function is evaluated at compile time, the compiler must verify that the call arguments satisfy the precondition and that the function body upholds the postcondition. This verification shares the same SMT solver and time budget as regular function contracts. If the solver times out in strict mode, the compilation fails with a request to simplify the contract or add intermediate assertions; in normal mode, the function may be marked `@trusted` to suppress the proof obligation. Comptime function contracts are typically easier to prove because arguments are compile-time constants.
-
-### Compile-Time Reflection (`@typeInfo`)
-Posita provides a built-in `@typeInfo` function, accessible only in `comptime` contexts, to introspect any type's structure:
-```plaintext
-comptime {
-    set info = @typeInfo(MyStruct);
-    for field in info.fields {
-        // generate serialization code
-    }
-}
-```
-This returns a `TypeInfo` enum that describes the type completely (fields, variants, bit widths, etc.), enabling serialization, auto-formatting, and other compile-time code generation.
-
-### Optimization Hooks (advanced)
-```plaintext
-comptime {
-    set plan = optimize(target = my_function, strategy = q_learn(config));
-    plan.apply();
-}
-```
-
----
-
-## Modules and Imports
-```plaintext
-import module_name;
-import module_name as alias;
-from module import item1, item2;
-```
-
----
-
 ## Standard Library Initialization Philosophy
 Posita avoids implicit conversions between compound literals and dynamic containers. Instead, standard library types provide explicit constructors. For convenient container initialization, `comptime` functions with variable compile-time arguments are used:
 ```plaintext
@@ -692,3 +821,18 @@ A: No, because all `From` implementations are statically known and visible to to
 
 **Q: How does Posita eliminate undefined behavior?**
 A: By making every potentially dangerous operation either statically provable or explicitly checked. Uninitialized variables are impossible due to type defaults (or `no_default` enforcement). Overflow, division by zero, and null dereferences are trapped or prevented by contracts. Data races are eliminated by borrow checking. The strict mode rejects any code that cannot be proven safe at compile time, and forbids `unsafe` entirely.
+
+**Q: Why doesn't Posita support ternary operators (`? :`)?**
+A: Posita's `if` is already an expression, serving the same purpose with greater readability and without the precedence pitfalls of `? :`. The `?` symbol is reserved for error propagation, aligning with Posita's keyword-centric style.
+
+**Q: How does Posita handle concurrency?**
+A: Posita uses structured tasks and bounded channels, inspired by Ada. Asynchronous operations are supported via explicit `async`/`await` with full coloring in function signatures. This model avoids the non-determinism of actor systems and is amenable to worst-case execution time analysis. Interrupts are modeled as high-priority tasks with strict resource limits.
+
+**Q: Why a file-based module system instead of something more flexible?**
+A: A file-based system makes the module tree explicit and trivially navigable. Combined with `pub` visibility and the prohibition of wildcard imports, it ensures that every external symbol's origin is traceable, supporting whole-program static analysis and security audits.
+
+**Q: How will Posita evolve without breaking existing code?**
+A: Posita uses editions to allow syntax and semantics to change over time. Different modules can use different editions, compiled together. Features are deprecated with `@deprecated` and remain available for at least one full edition cycle before removal, providing a stable migration path.
+
+**Q: Can I try out cutting-edge features before they are stable?**
+A: Yes, via `@experimental` attributes. These features require an explicit compiler flag to enable and come with no stability guarantees. They are intended for community testing and feedback. In strict mode, experimental features are disabled by default to prevent accidental use in production.
