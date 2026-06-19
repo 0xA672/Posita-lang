@@ -21,7 +21,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
 `catch`, `panic`, `unsafe`, `let`, `finally`,
-`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`
+`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`, `no_alloc_error`, `no_panic`, `debug_info`, `old`
 
 `Int`, `UInt`, `Ptr`, `Str`, `String`, `Result`, `Option`, `usize`, `Float` are built-in type constructors, not reserved words.  
 `linear`, `consume` are planned keywords; `dyn`, `by` are reserved for future use.
@@ -104,6 +104,22 @@ Manual implementation of `Copy` is allowed for types where bitwise replication i
 - `Float<bits>`: IEEE 754‑compliant floating‑point type with the specified bit width. `bits` must be 32 or 64. `Float<32>` corresponds to single precision, `Float<64>` to double precision.
 - Float literals (`3.14`, `2.5e-3`) have a default type of `Float<64>` unless explicitly annotated.
 
+### Fixed‑Precision Rational Numbers
+- `Rational<p, q>`: A fixed‑point rational type with `p` integer bits and `q` fractional bits. Arithmetic is performed exactly over the rational domain for contracts. The default overflow policy is `saturate`; `with overflow = trap` may be specified. Conversion to floating‑point is explicit (`as Float<64>`), using round‑to‑nearest ties‑to‑even by default.
+
+### Compile‑Time Regular Expressions
+- `Regex<"...">` is a type that validates the pattern at compile time and compiles it into a deterministic automaton. It supports safe, zero‑overhead string matching at runtime. Regex types cannot appear in contracts directly; they are for runtime use only.
+
+### Type‑level Constraint Shorthand
+Instead of `exists n: Int<32> invariant n > 0`, you may write:
+```posita
+type PositiveInt = Int<32> where value > 0;
+```
+This is syntactic sugar with identical semantics.
+
+### Zero‑Size Types (ZST)
+Posita guarantees that any `struct` composed entirely of ZST fields has size zero, and `[ZST; N]` also has size zero. ZST fields in `@packed` structs occupy no space. When `@align(N)` is applied to a ZST type, the alignment is honored but the size remains zero.
+
 ### Platform Word Type
 `usize` is a built‑in type alias for the unsigned integer whose width equals the target platform's pointer width. On 64‑bit targets it is `UInt<64>`, on 32‑bit targets `UInt<32>`, etc. It is intended for array indexing and pointer‑sized values. Programmers may always write `UInt<64>` or `UInt<32>` explicitly when portability is not a concern.
 
@@ -130,6 +146,17 @@ The compiler uses range analysis and type invariants to statically eliminate ove
   - `pointee`: the type it points to.
 - Syntactic sugar: `*T` is a platform‑word‑sized pointer to `T`.
 - References: `&T` (immutable), `&mut T` (mutable). References are checked at compile time and do not support pointer arithmetic. No null references are allowed; use `Option<&T>` for nullable semantics.
+- **Exclusive borrow**: `&mut T` is an exclusive, non‑copyable borrow. While it is live, the original variable is frozen—neither readable nor writable—preventing data races statically.
+
+### Explicit Lifetime Parameters
+When the compiler cannot infer lifetimes, you may annotate them explicitly:
+```posita
+def process<'a>(x: &'a mut Data, y: &'a Data) -> &'a mut Result { ... }
+```
+Lifetime annotations are verified by the borrow checker; mismatches cause compile errors. They serve only for disambiguation.
+
+### Reference‑Counted Type
+`Rc<T>` provides shared ownership. The compiler verifies that every `clone()` is paired with a corresponding `drop()` along all control‑flow paths, preventing leaks. The net change in reference count across any function boundary can be specified in contracts.
 
 ### Strings and Byte Slices
 Posita distinguishes between UTF‑8 text and arbitrary bytes:
@@ -257,18 +284,21 @@ The following attributes are not layout‑specific but affect language semantics
 | `@io` | Function | May perform any I/O (equivalent to `@io(read, write)`) |
 | `@alloc` | Function | May perform dynamic memory allocation |
 | `@no_alloc` | Function | Guarantees no dynamic allocation |
+| `@no_alloc_error` | Function | Guarantees no allocation on error paths, including `From` conversions |
+| `@no_panic` | Function | Guarantees the function never panics; compiler verifies no `trap`, bounds checks, or calls to non‑`@no_panic` functions |
 | `@runtime_check` | Function | Defers contract checking to runtime, even if arguments are compile‑time known. Overrides strict mode locally. |
-| `@cfg(condition)` | Module, Function | Conditional compilation. The condition may refer to target platform, features, etc. Only paths that compile under the configuration are permitted in strict mode. |
-| `@hint(assertion)` | Function, Loop | Provides a hint to the SMT solver to guide proof search. Hints do not affect runtime behavior. |
+| `@cfg(condition)` | Module, Function | Conditional compilation with `all`, `any`, `not` combinators. The condition may refer to target platform, features, etc. Only paths that compile under the configuration are permitted in strict mode. |
+| `@hint(assertion)` | Function, Loop | Provides a hint to the SMT solver to guide proof search. Hints must be accompanied by a meta‑contract that proves the hint itself is valid. |
 | `@exhaustive` | Enum | Requires all `match`, `if let`, and `while let` on the enum to be exhaustive. |
+| `@debug_info` | Function, Module | Controls which symbols are emitted into debug information. Supports minimal exposure for safety‑critical deployments. |
 
 **Attribute compatibility and precedence**: When multiple attributes are combined, the compiler follows a strict ordering:
 1. `@cfg` is evaluated first (determines existence of the item).
-2. Effect annotations (`@pure`, `@io`, `@alloc`, `@no_alloc`) are checked for consistency.
+2. Effect annotations (`@pure`, `@io`, `@alloc`, `@no_alloc`, `@no_alloc_error`, `@no_panic`) are checked for consistency.
 3. Contract‑related attributes (`@trusted`, `@runtime_check`, `@link_proof`, `@lemma`) are processed.
 4. Code‑generation attributes (`@inline`, `@noinline`, `@tailrec`) are applied last.
 
-Incompatible combinations (e.g., `@pure` + `@runtime_check`) are rejected at compile time.
+Incompatible combinations (e.g., `@pure` + `@runtime_check`, `@pure` + `@io`, `@runtime_check` + `@lemma`) are rejected at compile time.
 
 ### Type Attributes
 Access compile‑time properties using `'`:
@@ -297,7 +327,7 @@ comptime {
   Binds the type of `expression` to the compile‑time name `T`. The `..` is a placeholder for future extensions.
 
 ### Ghost Variables
-Ghost variables are declared with the `ghost` keyword and exist only at compile time. They participate in contracts and invariants but are completely erased from runtime code.
+Ghost variables are declared with the `ghost` keyword and exist only at compile time. They participate in contracts and invariants but are completely erased from runtime code. Their scope follows normal block scoping; they cannot affect runtime control flow (e.g., `if ghost_var` is illegal outside contracts).
 ```posita
 def get_adult_names(users: &[User]) -> Vector<String>
     requires users'len > 0
@@ -338,6 +368,8 @@ Functions may be annotated with fine‑grained effect markers to describe their 
 - **`@io(read, write)`** or simply **`@io`**: The function may perform any I/O.
 - **`@alloc`**: The function may perform dynamic memory allocation.
 - **`@no_alloc`**: The function guarantees no dynamic allocation.
+- **`@no_alloc_error`**: The function guarantees no allocation on any error path. All `From` conversions reachable via `?` in error paths must also be `@no_alloc`.
+- **`@no_panic`**: The function never panics. The compiler statically verifies the absence of overflow traps, bounds‑check failures, or calls to non‑`@no_panic` functions.
 - **`@trusted`**: The function contains `unsafe` operations and establishes a trust boundary; it must carry `requires`/`ensures` contracts.
 
 In strict mode the compiler verifies that effect annotations are consistent across call chains. A function calling an `@io(write)` function must itself be annotated at least `@io(write)`.
@@ -457,11 +489,16 @@ def main() -> Result<(), Error> {
 The `await` keyword marks a suspension point that must be visible to reviewers.
 
 ### Interrupts
-Modeled as special tasks with `@interrupt` attribute:
+Interrupt handlers are modeled as special, highly constrained tasks:
 ```posita
 @interrupt(irq = 14)
-def timer_handler() { /* ... */ }
+def timer_handler() -> ! {
+    // must be @no_alloc, @no_panic; cannot have custom parameters or return a value
+}
 ```
+- Interrupt handler functions must have the return type `!` (never return).
+- They are implicitly `@no_alloc` and `@no_panic`.
+- The compiler automatically generates the interrupt vector table from all `@interrupt` annotations, respecting platform ABI and optional `@layout` attributes.
 
 ### Task Isolation
 The `isolate` block guarantees that the enclosed code does not access any external mutable state. The compiler verifies this property statically, enabling safe concurrent access patterns.
@@ -514,10 +551,16 @@ type NewInteger = Int<128>;
 Requires `--enable-experimental` flag.
 
 ### Conditional Compilation
-Modules, functions, or type definitions can be conditionally compiled using the `@cfg` attribute:
+Modules, functions, or type definitions can be conditionally compiled using the `@cfg` attribute with the `all`, `any`, `not` combinators:
 ```posita
-@cfg(target_os = "linux")
+@cfg(all(target_os = "linux", target_arch = "x86_64"))
 def platform_specific() { ... }
+
+@cfg(any(feature = "logging", debug))
+def maybe_log(msg: &Str) { ... }
+
+@cfg(not(target_os = "windows"))
+def unix_only() { ... }
 ```
 In strict mode, all compilation paths must be provably reachable under at least one configuration.
 
@@ -534,6 +577,8 @@ Posita does not support procedural macros or any form of syntax‑level code gen
 - Calling `@io(write)` functions or any `@trusted` functions that perform I/O
 
 Violations are detected at compile time and cause a hard error. This guarantees that `comptime` evaluation is purely a deterministic, side‑effect‑free transformation of the source program.
+
+**Proof obligations for generated code**: Code generated by `comptime` is subject to the same verification standards as hand‑written code. Any `@trusted` function produced by `comptime` must include corresponding `@link_proof` or `@comptime_test` evidence; otherwise, compilation fails in strict mode.
 
 ### comptime Blocks
 ```posita
@@ -559,7 +604,7 @@ def test_trusted_function() {
     assert(result == expected_output);
 }
 ```
-Test failures cause a compile error. `@comptime_test` functions are stripped from the final binary.
+Test failures cause a compile error. `@comptime_test` functions are stripped from the final binary. Contract‑verification counterexamples can be automatically converted into such tests.
 
 ### Type Factories
 `comptime` functions can return `type`:
@@ -579,6 +624,7 @@ comptime {
     for field in info.fields { /* generate code */ }
 }
 ```
+Public reflection (`@typeInfo!`) only exposes `pub` items. Internal reflection (`@typeInfo!` with full access) is available only inside `@trusted` comptime blocks.
 
 ### Optimization Hooks (advanced)
 ```posita
@@ -676,9 +722,10 @@ def process() -> Result<(), Error> {
     set file = File.open("data.bin")?;
     return Ok(());
 } finally {
-    file.release_buffer();  // infallible cleanup, no ? or leave with
+    file.release_buffer();  // infallible cleanup: no ?, leave with, return, or panic allowed
 }
 ```
+`finally` blocks are reserved for infallible cleanup. For fallible cleanup, use `scope_cleanup` and handle errors explicitly.
 
 ### Expressions
 Arithmetic: `+`, `-`, `*`, `/`, `%`. The operators `+`, `-`, `*` accept optional overflow suffixes (`%`, `?`, `!`).
@@ -695,7 +742,7 @@ The `move` keyword explicitly transfers ownership of a non‑`Copy` value. It ma
 - Assignments: `set target = move source;`
 - Function arguments: `consume(move value);`
 - Closure captures: `let closure = |...| capture value by move { ... };`
-After a move, the source variable is invalidated and any subsequent use is a compile‑time error.
+After a move, the source variable is invalidated and any subsequent use is a compile‑time error. The compiler will not insert a `drop` call for the moved‑from variable.
 
 ---
 
@@ -785,6 +832,13 @@ def sqrt_approx(x: Float<64>) -> Float<64>
 { ... }
 ```
 
+To refer to the value of an argument at function entry, use the `old()` function:
+```posita
+def increment(x: &mut Int<32>)
+    ensures *x == old(*x) + 1
+{ *x += 1; }
+```
+
 ```posita
 def divide(a: Int<32>, b: Int<32>) -> Int<32>
     requires b != 0
@@ -831,6 +885,7 @@ Invariants and decreases clauses must appear immediately after the loop header, 
 ### Built‑in Contract Functions
 - `fold(arr, init, op)`: represents the left fold of array `arr` starting from `init` using binary operator `op`. It is a pure function used only in contracts and invariants. Its semantics are: `fold(arr, init, op) == op(...op(op(init, arr[0]), arr[1]), ..., arr[arr'len-1])`.
 - `abs(x)`: absolute value of integer `x`.
+- `old(expr)`: captures the value of `expr` at function entry, usable in `ensures` clauses.
 - `forall` and `exists` quantifiers may appear in contracts:
   ```posita
   requires forall i in 0..arr'len: arr[i] > 0
@@ -853,6 +908,7 @@ def serialize<T, S>(value: &T, stream: &mut S) -> Result<(), Error>
 constraint SortableContainer<C> { C: Container, C::Item: Ord, C::Item: Default }
 def sort<C>(container: &mut C) where C: SortableContainer { ... }
 ```
+Constraints may be combined with `+`: `def f<T>() where T: A + B { ... }`. Constraints may also reference other constraints, forming a hierarchy.
 
 ---
 
@@ -960,7 +1016,6 @@ def calculate_bonus(salary: Salary, multiplier: PositiveInt) -> Salary
     return result;
 }
 
-// Error handling with catch, as binding, arrow shorthand, and finally
 def process_employee(emp: &mut Employee, bonus_mult: PositiveInt) -> Result<(), AppError>
     requires emp.salary >= 0
 {
@@ -1015,7 +1070,7 @@ def main() -> Result<(), AppError> {
 - **From Rust**: `Result`‑based error handling (without type erasure), `if let`, `match`, trait‑like generics, borrow checker.
 - **From Zig**: The `comptime` mechanism and the philosophy of moving work to compile time are direct inspirations. Posita adds the `!` call marker and integrates `comptime` with SMT‑based contract verification, going beyond what Zig's comptime offers.
 - **From ATS**: The concept of encoding invariants in types and the ambition to eliminate runtime errors through static proofs have influenced Posita. ATS is a secondary inspiration after Ada, Rust, and Zig.
-- **Unique to Posita**: bit‑width parameterized integers with explicit overflow control, orthogonal pointer sizes, type‑level defaults with invariants and `no_default`, `leave`/`leave with`, type capture, fully static error monomorphization, compile‑time type factories, reflection, structured `finally` blocks, systematic UB elimination, optional strict mode, ghost variables, specification tags, named scope cleanup, construction validation, lemma functions, fine‑grained effect annotations, deferred contract checking (`@runtime_check`), layout reflection (`layout_of!`), proof hints (`@hint`), fine‑grained error accountability (`@must_handle`), tiered diagnostics, and implicit invariant propagation.
+- **Unique to Posita**: bit‑width parameterized integers with explicit overflow control, orthogonal pointer sizes, type‑level defaults with invariants and `no_default`, `leave`/`leave with`, type capture, fully static error monomorphization, compile‑time type factories, reflection, structured `finally` blocks, systematic UB elimination, optional strict mode, ghost variables, specification tags, named scope cleanup, construction validation, lemma functions, fine‑grained effect annotations, deferred contract checking (`@runtime_check`), layout reflection (`layout_of!`), proof hints (`@hint`), fine‑grained error accountability (`@must_handle`), tiered diagnostics, implicit invariant propagation, `old()` expressions, fixed‑precision rationals, MMIO types, interrupt vector generation, and more.
 
 ---
 
@@ -1097,7 +1152,7 @@ A: No. `@trusted` is a declaration‑site attribute on function definitions. Cal
 A: `set` is the general variable declaration, defaulting to immutability but allowing `set mut`. `let` is a restricted, always‑immutable form that additionally supports pattern destructuring (tuples, structs, enum variants with mandatory `else`). `let` always requires an explicit initializer and cannot use a type's default value. Use `set` for general purposes; use `let` when you need destructuring or want to enforce immutability at a glance.
 
 **Q: What are the fine‑grained effect annotations?**
-A: `@pure`, `@io(read)`, `@io(write)`, `@io`, `@alloc`, `@no_alloc`, and `@trusted` describe a function's side effects. The compiler checks these annotations for consistency, giving reviewers a precise summary of what a function can do without reading its body.
+A: `@pure`, `@io(read)`, `@io(write)`, `@io`, `@alloc`, `@no_alloc`, `@no_alloc_error`, `@no_panic`, and `@trusted` describe a function's side effects. The compiler checks these annotations for consistency, giving reviewers a precise summary of what a function can do without reading its body.
 
 **Q: How are slices passed to `extern "C"` functions?**
 A: `&[T]` and `&mut [T]` are automatically converted to `*const T` and `*mut T` at the ABI boundary, with the length component discarded. This is a deterministic, compiler‑enforced rule; the programmer must ensure the data meets the C function's expectations (e.g., null termination).
@@ -1121,7 +1176,7 @@ A: Place `@apply_lemma(lemma_fn_name)` on a function definition. The compiler wi
 A: The `...args: T` syntax declares a variadic parameter. Inside the function body, `args` is accessible as a `&[T]` slice containing all supplied arguments. This is typically used in `comptime` functions for container initializers.
 
 **Q: How does `move` work?**
-A: `move` explicitly transfers ownership of a non‑`Copy` value in assignments, function arguments, or closure captures. After a move, the source variable is invalidated and any subsequent use is a compile‑time error.
+A: `move` explicitly transfers ownership of a non‑`Copy` value in assignments, function arguments, or closure captures. After a move, the source variable is invalidated and any subsequent use is a compile‑time error. The compiler will not call `drop` on the moved‑from variable.
 
 **Q: Are `extern "C"` functions safe to call?**
 A: No. All `extern "C"` functions are inherently unsafe and can only be called inside `unsafe` blocks or `@trusted` functions. This ensures all FFI calls are auditable.
@@ -1145,13 +1200,13 @@ A: Use the `42i32` suffix for `Int<32>` or `0xFFu8` for `UInt<8>`. This is synta
 A: An `isolate` block guarantees that the enclosed code does not access any external mutable state. The compiler verifies this statically, enabling safe concurrent execution from multiple interrupt or task contexts.
 
 **Q: What is conditional compilation (`@cfg`)?**
-A: The `@cfg(condition)` attribute allows modules, functions, or type definitions to be conditionally included based on target platform, features, or other compile‑time predicates. In strict mode, all compilation paths must be reachable under some configuration.
+A: The `@cfg(condition)` attribute allows modules, functions, or type definitions to be conditionally included based on target platform, features, or other compile‑time predicates. Conditions can be combined with `all`, `any`, `not`. In strict mode, all compilation paths must be reachable under some configuration.
 
 **Q: What is `layout_of!`?**
 A: `layout_of!(T)` is a compile‑time reflection function that returns a `LayoutDescriptor` detailing the exact size, alignment, and field offsets of type `T`. It is essential for verifying hardware‑facing layouts in `comptime` code.
 
 **Q: How do `@hint` attributes help with proofs?**
-A: `@hint(assertion)` provides a suggestion to the SMT solver during contract verification. It guides the solver's search without affecting runtime behavior or safety guarantees. Useful when automatic proof search needs additional domain knowledge.
+A: `@hint(assertion)` provides a suggestion to the SMT solver during contract verification. It guides the solver's search without affecting runtime behavior or safety guarantees. The hint itself must be proven valid (meta‑contract) before being injected.
 
 **Q: What are `@must_handle` and how is it different from `@must_use`?**
 A: `@must_use` warns if the entire return value is ignored. `@must_handle` is more specific: it lets a library author name particular error variants that the caller must explicitly handle (via `catch` or `match`), even if other variants are handled by a wildcard. This ensures critical failure modes never slip through silently.
