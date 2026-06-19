@@ -1,5 +1,5 @@
 # Posita Language Syntax
-**Document revision: 2026-06-18** (working draft, not a frozen specification)
+**Document revision: 2026-06-19** (working draft, not a frozen specification)
 
 > [!NOTE]
 > This document version tracks its own edits. It does **not** correspond to a language specification release.
@@ -9,7 +9,7 @@
 Posita is a **ultra-static, systems programming language** where the programmer explicitly *posits* every representation detail: bit widths, pointer sizes, default values, error paths, overflow behavior, and even resource consumption protocols. All decisions are made visible in source and enforced at compile time with zero runtime overhead.
 
 - **Explicit over implicit**: No hidden ABI, no type-erased errors, no null pointers, no implicit overflow, no invisible allocations. All critical semantic effects—compile-time execution (`!`), error propagation (`?`), asynchronous suspension (`await`)—are marked with dedicated syntax at the point of use. Unsafe operations are confined to functions marked `@trusted` at the point of declaration, establishing explicit trust boundaries. Reviewers can see every important behavior without reading function definitions.
-- **Compile-time over run-time**: Error handling, defaults, optimizations, reflection, and resource tracking are resolved statically.
+- **Compile-time over run-time**: Error handling, defaults, optimizations, reflection, and resource tracking are resolved statically. A function may optionally defer contract checking to runtime via `@runtime_check`.
 - **Readable as documentation**: English keywords (`def`, `set`, `leave`, `catch`), not cryptic symbols. Specification tags (`@spec`, `@requirement`, `@rationale`) link code directly to system requirements.
 - **No undefined behavior in safe code**: Every operation either succeeds with defined semantics or is rejected at compile time.
 
@@ -104,12 +104,12 @@ Manual implementation of `Copy` is allowed for types where bitwise replication i
 - Float literals (`3.14`, `2.5e-3`) have a default type of `Float<64>` unless explicitly annotated.
 
 ### Platform Word Type
-`usize` is a built‑in type alias for the unsigned integer whose width equals the target platform’s pointer width. On 64‑bit targets it is `UInt<64>`, on 32‑bit targets `UInt<32>`, etc. It is intended for array indexing and pointer‑sized values. Programmers may always write `UInt<64>` or `UInt<32>` explicitly when portability is not a concern.
+`usize` is a built‑in type alias for the unsigned integer whose width equals the target platform's pointer width. On 64‑bit targets it is `UInt<64>`, on 32‑bit targets `UInt<32>`, etc. It is intended for array indexing and pointer‑sized values. Programmers may always write `UInt<64>` or `UInt<32>` explicitly when portability is not a concern.
 
 ### Overflow Behavior
 Integer overflow is never undefined. The default overflow policy is `trap` (compile‑time error in strict mode, runtime panic otherwise). Programmers can override at the type level:
 ```posita
-type WrapCount = Int<32> with overflow = wrap;     // two’s complement wrap
+type WrapCount = Int<32> with overflow = wrap;     // two's complement wrap
 type SatCount  = Int<32> with overflow = saturate;  // saturation
 type StrictCount = Int<32> with overflow = trap;    // trap (default)
 ```
@@ -125,7 +125,7 @@ The compiler uses range analysis and type invariants to statically eliminate ove
 
 ### Pointers and References
 - Raw pointer type: `Ptr<size = SizeType, pointee = PointeeType>`
-  - `size`: type that determines the pointer’s own width (e.g., `UInt<16>`).
+  - `size`: type that determines the pointer's own width (e.g., `UInt<16>`).
   - `pointee`: the type it points to.
 - Syntactic sugar: `*T` is a platform‑word‑sized pointer to `T`.
 - References: `&T` (immutable), `&mut T` (mutable). References are checked at compile time and do not support pointer arithmetic. No null references are allowed; use `Option<&T>` for nullable semantics.
@@ -251,6 +251,7 @@ The following attributes are not layout‑specific but affect language semantics
 | `@io` | Function | May perform any I/O (equivalent to `@io(read, write)`) |
 | `@alloc` | Function | May perform dynamic memory allocation |
 | `@no_alloc` | Function | Guarantees no dynamic allocation |
+| `@runtime_check` | Function | Defers contract checking to runtime, even if arguments are compile‑time known. Overrides strict mode locally. |
 
 ### Type Attributes
 Access compile‑time properties using `'`:
@@ -623,6 +624,7 @@ Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 Dereference: `*ptr`
 Address‑of: `&var`
 Cast: `value as NewType` (safe), `value as! NewType` (bitcast)
+Rounding suffixes for float‑to‑int conversion: `round`, `trunc` (default), `ceil`, `floor`.
 
 ### Move Semantics
 The `move` keyword explicitly transfers ownership of a non‑`Copy` value. It may be used in:
@@ -696,6 +698,18 @@ def divide(a: Int<32>, b: Int<32>) -> Int<32>
     requires b != 0
     ensures result * b == a
 { return a / b; }
+```
+
+### Deferred Contract Checking
+When the `@runtime_check` attribute is applied to a function, its `requires` and `ensures` checks are performed at runtime, even if the arguments are compile‑time constants. This is useful during development or when interfacing with untrusted inputs. In strict mode, the compiler emits a warning for each `@runtime_check` function, noting that the function has not been statically verified.
+```posita
+@runtime_check
+def debug_divide(a: Int<32>, b: Int<32>) -> Int<32>
+    requires b != 0
+    ensures result * b == a
+{
+    return a / b;   // will trap at runtime if b == 0
+}
 ```
 
 ### Loop Invariants
@@ -879,7 +893,9 @@ def main() -> Result<(), AppError> {
 ## Relationship to Other Languages
 - **From Ada**: explicit representation control, attribute syntax, contract‑based verification, default initialization, traceability.
 - **From Rust**: `Result`‑based error handling (without type erasure), `if let`, `match`, trait‑like generics, borrow checker.
-- **Unique to Posita**: bit‑width parameterized integers with explicit overflow control, orthogonal pointer sizes, type‑level defaults with invariants and `no_default`, `leave`/`leave with`, type capture, fully static error monomorphization, compile‑time type factories, reflection, structured `finally` blocks, systematic UB elimination, optional strict mode, ghost variables, specification tags, named scope cleanup, construction validation, lemma functions, fine‑grained effect annotations.
+- **From Zig**: The `comptime` mechanism and the philosophy of moving work to compile time are direct inspirations. Posita adds the `!` call marker and integrates `comptime` with SMT‑based contract verification, going beyond what Zig's comptime offers.
+- **From ATS**: The concept of encoding invariants in types and the ambition to eliminate runtime errors through static proofs have influenced Posita. ATS is a secondary inspiration after Ada, Rust, and Zig.
+- **Unique to Posita**: bit‑width parameterized integers with explicit overflow control, orthogonal pointer sizes, type‑level defaults with invariants and `no_default`, `leave`/`leave with`, type capture, fully static error monomorphization, compile‑time type factories, reflection, structured `finally` blocks, systematic UB elimination, optional strict mode, ghost variables, specification tags, named scope cleanup, construction validation, lemma functions, fine‑grained effect annotations, and deferred contract checking (`@runtime_check`).
 
 ---
 
@@ -925,7 +941,7 @@ A: Ghost variables (`ghost set mut x = ...`) exist only at compile time and are 
 A: Posita requires explicit parsing and validation at the boundary. Once the data is converted into a strongly‑typed struct, all subsequent code enjoys full static guarantees.
 
 **Q: Does Posita support runtime contract checking?**
-A: Yes, the `--runtime-contracts` flag converts unproven contracts into runtime assertions, useful for debugging and prototyping. For production safety‑critical systems, strict static proof is recommended.
+A: Yes, the global `--runtime-contracts` flag and the per‑function `@runtime_check` attribute allow deferring contract checks to runtime. This is useful for debugging or when interfacing with untrusted inputs.
 
 **Q: How does Posita interact with WCET analysis?**
 A: Posita generates highly deterministic code and exports detailed metadata (CFG, loop bounds, etc.) via `--emit-timing-info`. Professional WCET tools like aiT consume this metadata to produce precise timing results.
