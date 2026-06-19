@@ -36,7 +36,7 @@ Source file (.ps)
 Lexer (logos) ──► Token stream   [DONE]
     │
     ▼
-Parser (hand-written) ──► Concrete Syntax Tree (CST) / AST   [IN PROGRESS]
+Parser (hand-written) ──► Concrete Syntax Tree (CST) / AST   [DONE]
     │
     ▼
 AstLowering ──► High-level IR (HIR) with resolved names and types
@@ -61,7 +61,7 @@ All stages maintain diagnostic information (source locations, spans) for error r
 ### Stage 0: Bootstrapping the Compiler Shell
 - [x] Set up Rust project with `clap` CLI.
 - [x] Implement lexer using `logos` (keywords, operators, literals, comments). All token types defined and covered by 55+ tests. Includes correct handling of escape sequences, integer overflow errors, and apostrophe/attribute-access disambiguation.
-- [ ] Implement a minimal parser that can handle a "hello world" program: `def main() { }`.
+- [x] Implement a minimal parser that can handle a "hello world" program: `def main() { }`. AST, error recovery, and Pratt expression parsing are in place. Supported statements: `set`, `let`, `if`, `while`, `for`, `loop`, `leave`, `continue`, `return`, `comptime`, `scope_cleanup`, `trigger`, imports, type definitions, contracts, attributes. All tokens and significant syntax are covered.
 - [ ] Integrate Cranelift to produce an executable for this minimal program.
 - **Goal**: `ponent run hello.ps` compiles and runs a trivial program.
 
@@ -160,11 +160,12 @@ We welcome contributions! Please read `CONTRIBUTING.md` for details. The compile
 
 ## 8. Current Status & Short-term Roadmap
 
-- Lexer: Complete (all tokens defined, 55+ tests passing, integer overflow errors, proper escape handling). See `src/lexer.rs`.
-- Parser: Beginning implementation. Task: Build a hand-written recursive descent parser that produces an AST. First target: parse `def main() {}` and print the AST.
-- CLI: Skeleton exists using `clap`, can be extended to support `ponent lex`, `ponent parse`, etc.
+- Lexer: Complete (all tokens defined, 59 tests passing, integer overflow errors, proper escape handling). See `src/lexer.rs`.
+- Parser: Core implementation complete. Supports functions, variables, control flow, types, imports, attributes, contracts, and expressions via Pratt parsing. 3 parser tests passing. See `src/parser.rs`.
+- AST: Fully defined in `src/ast.rs` with all major Posita syntax structures.
+- CLI: Skeleton exists using `clap`, supports `ponent lex` and `ponent parse` commands.
 
-The immediate next step is designing the AST data structures and implementing the parser for the simplest program structure. After that, code generation via Cranelift will be added incrementally.
+The immediate next step is integrating Cranelift to generate executable code for a minimal program (`def main() {}`), completing Stage 0.
 
 ## 9. Conclusion
 
