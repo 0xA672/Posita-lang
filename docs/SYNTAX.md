@@ -21,7 +21,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
 `catch`, `panic`, `unsafe`, `let`, `finally`,
-`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`, `no_alloc_error`, `no_panic`, `debug_info`, `old`
+`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`, `no_alloc_error`, `no_panic`, `debug_info`, `old`, `audit_log`
 
 `Int`, `UInt`, `Ptr`, `Str`, `String`, `Result`, `Option`, `usize`, `Float` are built-in type constructors, not reserved words.  
 `linear`, `consume` are planned keywords; `dyn`, `by` are reserved for future use.
@@ -291,6 +291,7 @@ The following attributes are not layout‑specific but affect language semantics
 | `@hint(assertion)` | Function, Loop | Provides a hint to the SMT solver to guide proof search. Hints must be accompanied by a meta‑contract that proves the hint itself is valid. |
 | `@exhaustive` | Enum | Requires all `match`, `if let`, and `while let` on the enum to be exhaustive. |
 | `@debug_info` | Function, Module | Controls which symbols are emitted into debug information. Supports minimal exposure for safety‑critical deployments. |
+| `@audit_log` | Function | Marks a function whose runtime contract violations must be written to an immutable audit log. The storage backend is defined by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended. |
 
 **Attribute compatibility and precedence**: When multiple attributes are combined, the compiler follows a strict ordering:
 1. `@cfg` is evaluated first (determines existence of the item).
@@ -369,8 +370,9 @@ Functions may be annotated with fine‑grained effect markers to describe their 
 - **`@alloc`**: The function may perform dynamic memory allocation.
 - **`@no_alloc`**: The function guarantees no dynamic allocation.
 - **`@no_alloc_error`**: The function guarantees no allocation on any error path. All `From` conversions reachable via `?` in error paths must also be `@no_alloc`.
-- **`@no_panic`**: The function never panics. The compiler statically verifies the absence of overflow traps, bounds‑check failures, or calls to non‑`@no_panic` functions.
+- **`@no_panic`**: The function never panics. The compiler statically verifies the absence of overflow traps, bounds‑check failures, or calls to non‑`@no_panic` functions. Callers are not required to be `@no_panic` themselves; the guarantee is internal to the function body.
 - **`@trusted`**: The function contains `unsafe` operations and establishes a trust boundary; it must carry `requires`/`ensures` contracts.
+- **`@audit_log`**: The function must write any runtime contract violation to an immutable audit log. The log storage backend is provided by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended.
 
 In strict mode the compiler verifies that effect annotations are consistent across call chains. A function calling an `@io(write)` function must itself be annotated at least `@io(write)`.
 
@@ -737,6 +739,8 @@ Address‑of: `&var`
 Cast: `value as NewType` (safe), `value as! NewType` (bitcast)
 Rounding suffixes for float‑to‑int conversion: `round`, `trunc` (default), `ceil`, `floor`.
 
+**`as!` layout compatibility**: The compiler verifies that the source and target types have the same size and alignment via `layout_of!`, or, in the case of truncation, that the truncated value does not violate the target type's `invariant`. All uses of `as!` are flagged by `capsa audit` for mandatory human review.
+
 ### Move Semantics
 The `move` keyword explicitly transfers ownership of a non‑`Copy` value. It may be used in:
 - Assignments: `set target = move source;`
@@ -762,6 +766,8 @@ def read_file(path: &[Byte]) -> Result<String, FileError> {
 }
 ```
 No type‑erased errors; fully monomorphized, zero overhead.
+
+When a function is annotated `@no_alloc_error`, the compiler verifies that every `?` propagation path uses only `From` implementations that are themselves `@no_alloc`. If any conversion in the error path could allocate, the `?` operator is rejected. Simple enum‑to‑enum conversions without payload transformations automatically satisfy this requirement.
 
 ### Handling Errors Locally with `catch`
 A `catch` expression has the type `T` where the preceding expression has type `Result<T, E>`. Each branch of `catch` must either diverge (via `leave with`, `return`, `panic`, etc.) or produce a value of type `T`. The patterns in `catch` branches are the enum variant names directly (e.g., `|IoError| { ... }`), not qualified paths, because the error type is already known from the expression.
@@ -831,6 +837,8 @@ def sqrt_approx(x: Float<64>) -> Float<64>
     ensures with ieee_precision
 { ... }
 ```
+
+**Asynchronous contracts**: For `async` functions, the postcondition may be further qualified with `ensures on_timeout => ...` and `ensures on_cancel => ...`. The `on_timeout` clause describes what holds when the operation times out (the runtime scheduler is responsible for triggering this path). The `on_cancel` clause describes what holds when the operation is cancelled before completion. The compiler verifies that the function body respects these guarantees along each corresponding control‑flow path.
 
 To refer to the value of an argument at function entry, use the `old()` function:
 ```posita
@@ -1152,7 +1160,7 @@ A: No. `@trusted` is a declaration‑site attribute on function definitions. Cal
 A: `set` is the general variable declaration, defaulting to immutability but allowing `set mut`. `let` is a restricted, always‑immutable form that additionally supports pattern destructuring (tuples, structs, enum variants with mandatory `else`). `let` always requires an explicit initializer and cannot use a type's default value. Use `set` for general purposes; use `let` when you need destructuring or want to enforce immutability at a glance.
 
 **Q: What are the fine‑grained effect annotations?**
-A: `@pure`, `@io(read)`, `@io(write)`, `@io`, `@alloc`, `@no_alloc`, `@no_alloc_error`, `@no_panic`, and `@trusted` describe a function's side effects. The compiler checks these annotations for consistency, giving reviewers a precise summary of what a function can do without reading its body.
+A: `@pure`, `@io(read)`, `@io(write)`, `@io`, `@alloc`, `@no_alloc`, `@no_alloc_error`, `@no_panic`, `@audit_log`, and `@trusted` describe a function's side effects. The compiler checks these annotations for consistency, giving reviewers a precise summary of what a function can do without reading its body.
 
 **Q: How are slices passed to `extern "C"` functions?**
 A: `&[T]` and `&mut [T]` are automatically converted to `*const T` and `*mut T` at the ABI boundary, with the length component discarded. This is a deterministic, compiler‑enforced rule; the programmer must ensure the data meets the C function's expectations (e.g., null termination).
@@ -1219,3 +1227,21 @@ A: By default, `ensures` applies to all exit paths. You can specialize with `ens
 
 **Q: How does the compiler help me debug contract failures?**
 A: The compiler provides three diagnostic levels (L1: locate, L2: explain with counterexamples, L3: full SMT‑LIB dump). Use `capsa build --diagnostic-level=N` to select the depth of information.
+
+**Q: When is `as!` safe to use?**
+A: The compiler verifies that source and target types have the same size and alignment, or that a truncation does not violate the target type's `invariant`. All uses of `as!` are flagged for human review by `capsa audit`.
+
+**Q: How is audit logging handled?**
+A: Functions marked `@audit_log` must write contract violations to an immutable audit log. The storage backend is provided by the standard library; tamper‑evident mechanisms (e.g., hash chains) are strongly recommended.
+
+**Q: How are `Rational` values converted to `Float`?**
+A: Conversion is explicit (`as Float<64>`) and uses round‑to‑nearest ties‑to‑even by default. This prevents silent precision loss.
+
+**Q: Why can't I use `Regex` types in contracts?**
+A: SMT solvers have limited string theory capabilities, making automatic proof unreliable. `Regex` types are for runtime use only; contracts should use simpler predicates.
+
+**Q: What effects do MMIO operations have?**
+A: MMIO reads and writes are implicitly `@io(read)` and `@io(write)`, respectively. The compiler ensures they are only used in appropriate effect contexts.
+
+**Q: How are interrupt handlers constrained?**
+A: Interrupt handlers must have the return type `!`, are implicitly `@no_alloc` and `@no_panic`, and cannot have custom parameters. The compiler enforces these rules and generates the interrupt vector table from `@interrupt` annotations.
