@@ -21,7 +21,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
 `catch`, `panic`, `unsafe`, `let`, `finally`,
-`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`
+`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`
 
 `Int`, `UInt`, `Ptr`, `Str`, `String`, `Result`, `Option`, `usize`, `Float` are built-in type constructors, not reserved words.  
 `linear`, `consume` are planned keywords; `dyn`, `by` are reserved for future use.
@@ -242,10 +242,12 @@ The following attributes are not layout‑specific but affect language semantics
 | `@inline` | Function | Forces inlining at call sites; compile error if not possible |
 | `@noinline` | Function | Prevents inlining of the function |
 | `@must_use` | Function, Type | Compiler warns if the return value is silently discarded. `Result` and `Option` are implicitly `@must_use`. |
+| `@must_handle(Variant1, ...)` | Function (returning `Result`) | Compiler warns if the caller does not explicitly match or catch the listed error variants. Provides finer‑grained error accountability than `@must_use`. |
 | `@tailrec` | Function | Verifies that all recursive calls are in tail position and enforces tail‑call optimization; compile error if not possible |
 | `@lemma` | Function | Marks a `comptime` proof helper that returns assertions for the SMT solver |
 | `@apply_lemma(...)` | Function | Applies a lemma (by name) to supply the SMT solver with additional assertions during verification |
 | `@trusted` | Function | Establishes a trust boundary for `unsafe` operations; requires `requires`/`ensures` contracts |
+| `@link_proof(path, hash)` | Function (`@trusted`) | References an external formal proof (e.g., Coq/ATS script) and records its SHA‑256 hash, supplementing the verification of `@trusted` code. `capsa audit` verifies the file exists and matches the hash. |
 | `@pure` | Function | No side effects; result depends only on arguments |
 | `@io(read)` | Function | May perform input operations |
 | `@io(write)` | Function | May perform output operations |
@@ -511,6 +513,14 @@ In strict mode, all compilation paths must be provably reachable under at least 
 
 Posita does not support procedural macros or any form of syntax‑level code generation outside the `comptime` system. All compile‑time code generation is performed by `comptime` functions, which are type‑checked, sandboxed, and subject to resource limits. This ensures that all code—whether executed at runtime or at compile time—is visible, auditable, and subject to the same safety guarantees.
 
+**Safety restrictions:** `comptime` code runs in a sandboxed environment. It is **prohibited** from performing any of the following:
+- File system writes
+- Network access
+- Spawning processes
+- Calling `@io(write)` functions or any `@trusted` functions that perform I/O
+
+Violations are detected at compile time and cause a hard error. This guarantees that `comptime` evaluation is purely a deterministic, side‑effect‑free transformation of the source program.
+
 ### comptime Blocks
 ```posita
 comptime { /* compile‑time code */ }
@@ -727,6 +737,21 @@ def fetch_or_default() -> Data {
 ### Fatal Errors: `panic`
 Only within `unsafe` contexts or `comptime` blocks.
 
+### Fine‑Grained Error Accountability (`@must_handle`)
+By default, `@must_use` ensures that a `Result` is not silently discarded. The `@must_handle` attribute provides finer control, requiring callers to explicitly handle specific error variants:
+```posita
+@must_handle(NetworkError, ParseError)
+def fetch() -> Result<Data, Error> { ... }
+
+// Caller that ignores NetworkError or ParseError will get a compiler warning
+let data = fetch() catch {
+    |NetworkError as e| { log(e); cached_default }  // handled
+    |ParseError => { return Err(...) }               // handled
+    // other errors can still fall through
+};
+```
+In strict mode, the warning becomes an error.
+
 ---
 
 ## Contracts and Constraints
@@ -834,6 +859,8 @@ set v = vec!(1, 2, 3);  // Creates Vector<Int<32>> via explicit comptime functio
 | **Invalid enum values** | Type invariants. |
 | **Misaligned pointers** | `Ptr` type carries alignment; safe casts check alignment; `as!` demands proof of alignment. |
 | **Type punning / transmute** | `as!` requires compile‑time verification of layout compatibility. |
+| **Non‑terminating loops** | `decreases` clause on loops proves strict decrease of a non‑negative measure. |
+| **Non‑terminating recursion** | `terminates` clause on functions proves strict decrease of the argument. |
 | **Infinite loops at compile time** | `comptime` execution bounded by step and memory limits. |
 | **Static initialization order** | Compile‑time evaluation ensures constant initializers; module‑level variables use zero‑init or type defaults. |
 
@@ -896,6 +923,7 @@ def calculate_bonus(salary: Salary, multiplier: PositiveInt) -> Salary
     return result;
 }
 
+// Error handling with catch, as binding, arrow shorthand, and finally
 def process_employee(emp: &mut Employee, bonus_mult: PositiveInt) -> Result<(), AppError>
     requires emp.salary >= 0
 {
@@ -950,7 +978,7 @@ def main() -> Result<(), AppError> {
 - **From Rust**: `Result`‑based error handling (without type erasure), `if let`, `match`, trait‑like generics, borrow checker.
 - **From Zig**: The `comptime` mechanism and the philosophy of moving work to compile time are direct inspirations. Posita adds the `!` call marker and integrates `comptime` with SMT‑based contract verification, going beyond what Zig's comptime offers.
 - **From ATS**: The concept of encoding invariants in types and the ambition to eliminate runtime errors through static proofs have influenced Posita. ATS is a secondary inspiration after Ada, Rust, and Zig.
-- **Unique to Posita**: bit‑width parameterized integers with explicit overflow control, orthogonal pointer sizes, type‑level defaults with invariants and `no_default`, `leave`/`leave with`, type capture, fully static error monomorphization, compile‑time type factories, reflection, structured `finally` blocks, systematic UB elimination, optional strict mode, ghost variables, specification tags, named scope cleanup, construction validation, lemma functions, fine‑grained effect annotations, deferred contract checking (`@runtime_check`), layout reflection (`layout_of!`), and proof hints (`@hint`).
+- **Unique to Posita**: bit‑width parameterized integers with explicit overflow control, orthogonal pointer sizes, type‑level defaults with invariants and `no_default`, `leave`/`leave with`, type capture, fully static error monomorphization, compile‑time type factories, reflection, structured `finally` blocks, systematic UB elimination, optional strict mode, ghost variables, specification tags, named scope cleanup, construction validation, lemma functions, fine‑grained effect annotations, deferred contract checking (`@runtime_check`), layout reflection (`layout_of!`), proof hints (`@hint`), and fine‑grained error accountability (`@must_handle`).
 
 ---
 
@@ -1062,7 +1090,10 @@ A: `move` explicitly transfers ownership of a non‑`Copy` value in assignments,
 A: No. All `extern "C"` functions are inherently unsafe and can only be called inside `unsafe` blocks or `@trusted` functions. This ensures all FFI calls are auditable.
 
 **Q: How should `catch` patterns be written?**
-A: `catch` branches use the enum variant names directly (e.g., `|IoError| { ... }`), without qualifying them with the enum type. The error type is already known from the expression being caught. The `as` keyword can bind the error value to a local variable.
+A: `catch` branches use the enum variant names directly (e.g., `|IoError| { ... }`), without qualifying them with the enum type. The error type is already known from the expression being caught. The `as` keyword can bind the error value to a local variable. For branches consisting of a single expression, the arrow shorthand `=>` can replace curly braces: `|ParseError => return Err(...)`.
+
+**Q: How do I enforce that callers handle specific errors?**
+A: Annotate the function with `@must_handle(Variant1, ...)`. The compiler will warn if a caller does not explicitly match or catch those variants. This keeps critical errors visible without forcing exhaustive matching of all variants.
 
 **Q: What is dynamic dispatch and how do I use it?**
 A: Dynamic dispatch is available via `dyn Trait` objects, which use a vtable for method calls. Use them explicitly when static dispatch is not possible, such as storing heterogeneous types in a collection. This makes runtime dispatch visible to reviewers.
@@ -1084,3 +1115,6 @@ A: `layout_of!(T)` is a compile‑time reflection function that returns a `Layou
 
 **Q: How do `@hint` attributes help with proofs?**
 A: `@hint(assertion)` provides a suggestion to the SMT solver during contract verification. It guides the solver's search without affecting runtime behavior or safety guarantees. Useful when automatic proof search needs additional domain knowledge.
+
+**Q: What are `@must_handle` and how is it different from `@must_use`?**
+A: `@must_use` warns if the entire return value is ignored. `@must_handle` is more specific: it lets a library author name particular error variants that the caller must explicitly handle (via `catch` or `match`), even if other variants are handled by a wildcard. This ensures critical failure modes never slip through silently.
