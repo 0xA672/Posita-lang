@@ -58,7 +58,7 @@ optimization = "size"             # Options: speed, size, none
 
 This is where `capsa` fundamentally differs from general-purpose package managers.
 
-### 4.1 Contract Audit Dependencies (`@audit`)
+### 4.1 Contract Audit Dependencies
 
 Security policies can be applied per-dependency in `posita.toml`:
 
@@ -88,9 +88,25 @@ The `capsa audit` command scans the entire project and its dependencies to:
 
 This report serves as a security certification artifact for standards like DO-178C or ISO 26262.
 
-### 4.4 External Proof Verification (`@link_proof`)
+### 4.4 External Proof Verification
 
 If a `@trusted` function references an external formal proof (e.g., a Coq file via `@link_proof`), `capsa` verifies the existence and hash of the proof file during both publishing and installation. The proof is distributed alongside the package, enabling independent verification by auditors.
+
+Additionally, projects can include a `proofs.toml` manifest at their root to systematically manage all external proofs:
+
+```toml
+[proofs]
+root = "proofs/"
+
+[[proofs.entry]]
+name = "safe_alloc"
+path = "safe_alloc.v"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+depends_on = ["memory_model"]
+verified_by = "Coq 8.18"
+```
+
+`capsa audit` cross-checks every `@link_proof` reference against this manifest. Unregistered proof files trigger an error in strict mode. This provides a configuration-management layer for verification assets, satisfying DO-178C requirements.
 
 ## 5. Publishing and the Registry
 
@@ -179,7 +195,7 @@ These policies are defined in a `capsa.toml` configuration file at the project o
 | **Contract verification** | None | **Strict mode with full SMT-based contract proving** |
 | **Effect consistency** | None | **Verification of `@pure`, `@io`, `@alloc` annotations** |
 | **`unsafe` isolation** | None | **Automated reporting and enforcement** |
-| **External proof integration** | None | **`@link_proof` distribution and verification** |
+| **External proof integration** | None | **`@link_proof` distribution and `proofs.toml` management** |
 | **Registry safety levels** | None | **Certified, Verified, Audited, Unverified** |
 
 ## 9. Future Plans
@@ -187,3 +203,4 @@ These policies are defined in a `capsa.toml` configuration file at the project o
 - **`capsa verify`**: A standalone command that runs a full strict-mode verification of the entire project and generates a printable "Safety Certificate" suitable for regulatory submission.
 - **Binary distribution**: Allow publishing pre-compiled, contract-signed binaries for closed-source or confidential projects.
 - **Workspace support**: Enhanced management of multi-crate workspaces for large-scale safety-critical systems.
+- **Proof asset management**: Deeper integration with `proofs.toml` for continuous verification of external proofs in CI/CD pipelines.
