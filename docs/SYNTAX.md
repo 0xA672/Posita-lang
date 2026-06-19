@@ -21,7 +21,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
 `catch`, `panic`, `unsafe`, `let`, `finally`,
-`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`
+`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`
 
 `Int`, `UInt`, `Ptr`, `Str`, `String`, `Result`, `Option`, `usize`, `Float` are built-in type constructors, not reserved words.  
 `linear`, `consume` are planned keywords; `dyn`, `by` are reserved for future use.
@@ -31,6 +31,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 
 ### Literals
 - Integers: `42`, `0xFF`, `0b1010`
+- Integer suffixes for explicit bit-width: `42i32` (equivalent to `42: Int<32>`), `0xFFu8` (equivalent to `0xFF: UInt<8>`). The suffix is syntactic sugar and the type is fully checked.
 - Floats: `3.14`, `2.5e-3` (type `Float<64>` by default)
 - Characters: `'a'` (UTF-8, type `UInt<8>`)
 - Byte strings: `b"hello\n"` (type `&[Byte]`)
@@ -252,6 +253,8 @@ The following attributes are not layout‑specific but affect language semantics
 | `@alloc` | Function | May perform dynamic memory allocation |
 | `@no_alloc` | Function | Guarantees no dynamic allocation |
 | `@runtime_check` | Function | Defers contract checking to runtime, even if arguments are compile‑time known. Overrides strict mode locally. |
+| `@cfg(condition)` | Module, Function | Conditional compilation. The condition may refer to target platform, features, etc. Only paths that compile under the configuration are permitted in strict mode. |
+| `@hint(assertion)` | Function, Loop | Provides a hint to the SMT solver to guide proof search. Hints do not affect runtime behavior. |
 
 ### Type Attributes
 Access compile‑time properties using `'`:
@@ -260,6 +263,16 @@ Access compile‑time properties using `'`:
 - `x'align` – alignment
 - `x'first`, `x'last` – first/last index (for arrays)
 - `T'default` – the default value of type `T` (usable in `comptime`)
+
+### Compile‑Time Layout Reflection
+The built‑in function `layout_of!(T)` returns a compile‑time `LayoutDescriptor` for type `T`, describing the exact size, alignment, and field offsets. This is essential for `comptime` code that verifies or generates hardware‑specific memory layouts.
+```posita
+comptime {
+    set desc = layout_of!(IPv4Header);
+    // desc.size, desc.align, desc.fields[0].offset, etc.
+}
+```
+`layout_of!` is a `comptime`‑only operation and thus requires `!`.
 
 ### Type Inference and Capture
 - `set a = 42;` infers `a` as `Int<32>` (default integer width).
@@ -336,13 +349,19 @@ The length component of slices is discarded. The caller is responsible for ensur
 
 ## Traits and Implementations
 
-Posita uses traits to define shared behavior, similar to Rust traits or Haskell typeclasses. Traits may contain function signatures, associated types, and default implementations.
+Posita uses traits to define shared behavior, similar to Rust traits or Haskell typeclasses. Traits may contain function signatures, associated types (with optional defaults), and default method implementations.
 
 ### Defining a Trait
 ```posita
 trait Add<Rhs = Self> {
     type Output;
     def add(self: &Self, rhs: &Rhs) -> Self::Output;
+}
+
+trait Iterator {
+    type Item;
+    type Distance = usize;  // associated type with default value
+    fn next(&mut self) -> Option<Self::Item>;
 }
 
 trait Default {
@@ -428,6 +447,16 @@ Modeled as special tasks with `@interrupt` attribute:
 def timer_handler() { /* ... */ }
 ```
 
+### Task Isolation
+The `isolate` block guarantees that the enclosed code does not access any external mutable state. The compiler verifies this property statically, enabling safe concurrent access patterns.
+```posita
+isolate {
+    // only local variables and immutable external references are accessible
+    set x = compute_safe();
+}
+```
+`isolate` blocks can be called from multiple interrupt contexts without data‑race risks.
+
 ---
 
 ## Modules and Imports
@@ -467,6 +496,14 @@ def old_method() { ... }
 type NewInteger = Int<128>;
 ```
 Requires `--enable-experimental` flag.
+
+### Conditional Compilation
+Modules, functions, or type definitions can be conditionally compiled using the `@cfg` attribute:
+```posita
+@cfg(target_os = "linux")
+def platform_specific() { ... }
+```
+In strict mode, all compilation paths must be provably reachable under at least one configuration.
 
 ---
 
@@ -533,7 +570,7 @@ Lemma functions are `comptime` functions that return auxiliary assertions to ass
 @lemma
 comptime def pow2_induction_hint(n: Int<32>) -> [Assertion; 2] { ... }
 ```
-They are invoked by placing **`@apply_lemma(pow2_induction_hint)`** on the target function’s definition, which causes the compiler to inject the returned assertions into the SMT solver’s context during verification of that function.
+They are invoked by placing **`@apply_lemma(pow2_induction_hint)`** on the target function's definition, which causes the compiler to inject the returned assertions into the SMT solver's context during verification of that function.
 
 ---
 
@@ -543,7 +580,7 @@ They are invoked by placing **`@apply_lemma(pow2_induction_hint)`** on the targe
 ```posita
 set identifier : Type = expression;   // full form
 set identifier = expression;          // type inference
-set identifier : Type;                // uses type’s default (unless no_default)
+set identifier : Type;                // uses type's default (unless no_default)
 ```
 Variables are immutable by default. Use `mut` for mutability:
 ```posita
@@ -552,7 +589,7 @@ x = x + 1;
 ```
 
 ### `let` Bindings
-`let` is a restricted, immutable‑only variant of `set` that additionally supports pattern destructuring. A `let` binding is always immutable; there is no `let mut`. It must always be explicitly initialized and cannot rely on a type’s default value.
+`let` is a restricted, immutable‑only variant of `set` that additionally supports pattern destructuring. A `let` binding is always immutable; there is no `let mut`. It must always be explicitly initialized and cannot rely on a type's default value.
 
 - Simple binding: `let x = expr;` (equivalent to `set x = expr;`)
 - Tuple destructuring: `let (x, y) = tuple_expr;`
@@ -576,6 +613,7 @@ x = x + 1;
 - **while let**: `while let Some(item) = iter.next() { ... }`
 - **Loops**: `for item in iterable { ... }`, `while condition { ... }`, `loop { ... }`
 - **Leaving loops**: `leave;` (exits `for`, `while`, or `loop`), `leave 'label;`, `continue;`
+- **Never type** (`!`): The `!` type represents a computation that never returns (e.g., `panic`, infinite loops, or divergent control flow). It can be used as the return type of functions that do not terminate normally, enabling the compiler to perform control‑flow analysis.
 
 ### Functions
 ```posita
@@ -586,11 +624,13 @@ Default parameter values: `def f(x: Int<32> = 0) { ... }`
 ### Pattern Matching
 ```posita
 match value {
-    pattern1 => expression1,
-    pattern2 => { statements },
+    pattern1 | pattern2 if guard_condition => expression1,
+    pattern3 => { statements },
     _ => default,
 }
 ```
+- **Or patterns**: `pattern1 | pattern2` matches if either pattern matches. Both patterns must bind the same set of variables with compatible types.
+- **Guards**: The `if guard_condition` clause filters matches. Guard expressions must be `@pure` and free of side effects.
 
 ### Named Scope Cleanup
 Multiple cleanup actions can be declared with `scope_cleanup` and explicitly triggered before the end of scope:
@@ -659,12 +699,14 @@ Example with divergence:
 ```posita
 def process() -> Result<(), ProcessError> {
     set data = fetch() catch {
-        |NetworkError| { leave with Err(ProcessError::NetworkFail); }
-        |ParseError|  { leave with Err(ProcessError::BadData); }
+        |NetworkError as e| { log(e); leave with Err(ProcessError::NetworkFail); }
+        |ParseError => { return Err(ProcessError::BadData); }
     };
     return Ok(());
 }
 ```
+- **`as` binding**: Binds the error value to a local variable for inspection or logging.
+- **Arrow shorthand** (`=>`): When a branch body is a single expression (e.g., a return value), the `=>` syntax can replace curly braces for brevity.
 
 Example with a fallback value (non‑diverging):
 ```posita
@@ -677,7 +719,7 @@ def fetch_or_default() -> Data {
 ```
 
 ### Early Return with `leave with`
-`leave with` is a structured, non‑local exit that returns an error from the current function. The expression after `leave with` must be of type `Err(E)` where `E` matches the error type of the enclosing function’s `Result`.
+`leave with` is a structured, non‑local exit that returns an error from the current function. The expression after `leave with` must be of type `Err(E)` where `E` matches the error type of the enclosing function's `Result`.
 
 ### Explicit Error Paths and `From` Conversions
 `From` implementations allow automatic error conversion via `?`. All conversions are statically known.
@@ -692,12 +734,22 @@ Only within `unsafe` contexts or `comptime` blocks.
 ### Function Contracts
 - `requires`: a precondition.
 - `ensures`: a postcondition.
+- `terminates`: a termination measure. For recursive functions, the argument specified must strictly decrease on each recursive call and have a lower bound, ensuring the recursion always terminates.
+
 Contracts are evaluated in the mathematical integer domain (ideal precision).
 ```posita
 def divide(a: Int<32>, b: Int<32>) -> Int<32>
     requires b != 0
     ensures result * b == a
 { return a / b; }
+
+def factorial(n: Int<32>) -> Int<32>
+    requires n >= 0
+    ensures result > 0
+    terminates n
+{
+    if n == 0 { 1 } else { n * factorial(n - 1) }
+}
 ```
 
 ### Deferred Contract Checking
@@ -712,7 +764,8 @@ def debug_divide(a: Int<32>, b: Int<32>) -> Int<32>
 }
 ```
 
-### Loop Invariants
+### Loop Invariants and Termination
+Loops may specify an `invariant` and a `decreases` clause. The `decreases` expression must be a non‑negative integer that strictly decreases on each iteration, providing a proof that the loop always terminates.
 ```posita
 def sum(arr: &[Int<32>]) -> Int<32>
     ensures result == fold(arr, 0, +)
@@ -720,11 +773,12 @@ def sum(arr: &[Int<32>]) -> Int<32>
     set mut total = 0;
     for i in 0..arr'len
         invariant total == fold(arr[0..i], 0, +)
+        decreases arr'len - i
     { total += arr[i]; }
     return total;
 }
 ```
-Invariants must appear immediately after the loop header, before the opening brace `{`.
+Invariants and decreases clauses must appear immediately after the loop header, before the opening brace `{`.
 
 ### Built‑in Contract Functions
 - `fold(arr, init, op)`: represents the left fold of array `arr` starting from `init` using binary operator `op`. It is a pure function used only in contracts and invariants. Its semantics are: `fold(arr, init, op) == op(...op(op(init, arr[0]), arr[1]), ..., arr[arr'len-1])`.
@@ -837,6 +891,7 @@ def calculate_bonus(salary: Salary, multiplier: PositiveInt) -> Salary
     set mut i: Int<32> = 0;
     while i < multiplier
         invariant result == salary + i * salary
+        decreases multiplier - i
     { result = result + salary; i = i + 1; }
     return result;
 }
@@ -846,8 +901,8 @@ def process_employee(emp: &mut Employee, bonus_mult: PositiveInt) -> Result<(), 
 {
     if emp.age > 100 { return Err(AppError::ValidationError(b"Employee too old\0               ")); }
     safe_puts(b"Processing employee...\0") catch {
-        |IoError| { leave with Err(AppError::IoError); }
-        |ValidationError| { leave with Err(AppError::IoError); }
+        |IoError as e| { log(e); leave with Err(AppError::IoError); }
+        |ValidationError => { return Err(AppError::IoError); }
     };
     emp.salary = calculate_bonus(emp.salary, bonus_mult);
     return Ok(());
@@ -895,22 +950,22 @@ def main() -> Result<(), AppError> {
 - **From Rust**: `Result`‑based error handling (without type erasure), `if let`, `match`, trait‑like generics, borrow checker.
 - **From Zig**: The `comptime` mechanism and the philosophy of moving work to compile time are direct inspirations. Posita adds the `!` call marker and integrates `comptime` with SMT‑based contract verification, going beyond what Zig's comptime offers.
 - **From ATS**: The concept of encoding invariants in types and the ambition to eliminate runtime errors through static proofs have influenced Posita. ATS is a secondary inspiration after Ada, Rust, and Zig.
-- **Unique to Posita**: bit‑width parameterized integers with explicit overflow control, orthogonal pointer sizes, type‑level defaults with invariants and `no_default`, `leave`/`leave with`, type capture, fully static error monomorphization, compile‑time type factories, reflection, structured `finally` blocks, systematic UB elimination, optional strict mode, ghost variables, specification tags, named scope cleanup, construction validation, lemma functions, fine‑grained effect annotations, and deferred contract checking (`@runtime_check`).
+- **Unique to Posita**: bit‑width parameterized integers with explicit overflow control, orthogonal pointer sizes, type‑level defaults with invariants and `no_default`, `leave`/`leave with`, type capture, fully static error monomorphization, compile‑time type factories, reflection, structured `finally` blocks, systematic UB elimination, optional strict mode, ghost variables, specification tags, named scope cleanup, construction validation, lemma functions, fine‑grained effect annotations, deferred contract checking (`@runtime_check`), layout reflection (`layout_of!`), and proof hints (`@hint`).
 
 ---
 
 ## Design Q&A
 
-**Q: Why “ultra‑static typing”? How is it different from dependent types or refinement types?**
+**Q: Why "ultra‑static typing"? How is it different from dependent types or refinement types?**
 A: Ultra‑static typing resolves all representation details and behavioral guarantees at compile time. Types depend only on compile‑time constants, avoiding runtime evidence. All checks are provable at compile time in strict mode, leaving zero runtime validation overhead.
 
-**Q: Why copy semantics by default? Doesn’t it harm performance?**
-A: Copy semantics eliminate moved‑from invalid states, crucial for safety‑critical reasoning. Small types copy at register speed. Large types should use references. Explicit `move` is available as an optimization. For detailed rationale, see the “Move vs. Copy” design note in DESIGN.md.
+**Q: Why copy semantics by default? Doesn't it harm performance?**
+A: Copy semantics eliminate moved‑from invalid states, crucial for safety‑critical reasoning. Small types copy at register speed. Large types should use references. Explicit `move` is available as an optimization. For detailed rationale, see the "Move vs. Copy" design note in DESIGN.md.
 
-**Q: How does `with default` differ from Rust’s `Default`?**
-A: Rust’s `Default` is a trait requiring explicit call; Posita’s is a type‑level attribute that automatically initializes. Defaults must satisfy type invariants. `with no_default` forces explicit initialization.
+**Q: How does `with default` differ from Rust's `Default`?**
+A: Rust's `Default` is a trait requiring explicit call; Posita's is a type‑level attribute that automatically initializes. Defaults must satisfy type invariants. `with no_default` forces explicit initialization.
 
-**Q: What is the role of `unsafe`? Is Posita “pure safe”?**
+**Q: What is the role of `unsafe`? Is Posita "pure safe"?**
 A: `unsafe` is confined, requiring `@trusted` with contracts. Strict Mode disallows `unsafe` entirely, making the program pure safe and UB‑free.
 
 **Q: How do you handle C ABI?**
@@ -946,8 +1001,8 @@ A: Yes, the global `--runtime-contracts` flag and the per‑function `@runtime_c
 **Q: How does Posita interact with WCET analysis?**
 A: Posita generates highly deterministic code and exports detailed metadata (CFG, loop bounds, etc.) via `--emit-timing-info`. Professional WCET tools like aiT consume this metadata to produce precise timing results.
 
-**Q: How does Posita compare to Moonbit’s formal verification?**
-A: Moonbit’s verification is lighter, targeting cloud/Wasm safety. Posita provides hardware‑level precision (bit‑widths, endianness, interrupt safety) and a complete audit chain from requirements (`@spec`) to object code, suitable for DO‑178C and ISO 26262 certification.
+**Q: How does Posita compare to Moonbit's formal verification?**
+A: Moonbit's verification is lighter, targeting cloud/Wasm safety. Posita provides hardware‑level precision (bit‑widths, endianness, interrupt safety) and a complete audit chain from requirements (`@spec`) to object code, suitable for DO‑178C and ISO 26262 certification.
 
 **Q: Does Posita have `if` expressions?**
 A: Yes. `if` is an expression that returns a value. All branches must return the same type, and the `else` branch is mandatory.
@@ -974,22 +1029,22 @@ A: `@packed` removes padding, `@endian` controls byte order, `@bit_order` contro
 A: No. `@trusted` is a declaration‑site attribute on function definitions. Call sites remain clean; the trust boundary is established once, at the function definition, and tracked by `capsa audit`.
 
 **Q: What is the difference between `set` and `let`?**
-A: `set` is the general variable declaration, defaulting to immutability but allowing `set mut`. `let` is a restricted, always‑immutable form that additionally supports pattern destructuring (tuples, structs, enum variants with mandatory `else`). `let` always requires an explicit initializer and cannot use a type’s default value. Use `set` for general purposes; use `let` when you need destructuring or want to enforce immutability at a glance.
+A: `set` is the general variable declaration, defaulting to immutability but allowing `set mut`. `let` is a restricted, always‑immutable form that additionally supports pattern destructuring (tuples, structs, enum variants with mandatory `else`). `let` always requires an explicit initializer and cannot use a type's default value. Use `set` for general purposes; use `let` when you need destructuring or want to enforce immutability at a glance.
 
 **Q: What are the fine‑grained effect annotations?**
-A: `@pure`, `@io(read)`, `@io(write)`, `@io`, `@alloc`, `@no_alloc`, and `@trusted` describe a function’s side effects. The compiler checks these annotations for consistency, giving reviewers a precise summary of what a function can do without reading its body.
+A: `@pure`, `@io(read)`, `@io(write)`, `@io`, `@alloc`, `@no_alloc`, and `@trusted` describe a function's side effects. The compiler checks these annotations for consistency, giving reviewers a precise summary of what a function can do without reading its body.
 
 **Q: How are slices passed to `extern "C"` functions?**
-A: `&[T]` and `&mut [T]` are automatically converted to `*const T` and `*mut T` at the ABI boundary, with the length component discarded. This is a deterministic, compiler‑enforced rule; the programmer must ensure the data meets the C function’s expectations (e.g., null termination).
+A: `&[T]` and `&mut [T]` are automatically converted to `*const T` and `*mut T` at the ABI boundary, with the length component discarded. This is a deterministic, compiler‑enforced rule; the programmer must ensure the data meets the C function's expectations (e.g., null termination).
 
 **Q: What is `usize`?**
-A: `usize` is a built‑in type alias for `UInt<N>` where `N` is the target platform’s pointer width. It exists for convenience when writing code that deals with array indices and pointer‑sized values, but explicit `UInt<32>` or `UInt<64>` may always be used instead.
+A: `usize` is a built‑in type alias for `UInt<N>` where `N` is the target platform's pointer width. It exists for convenience when writing code that deals with array indices and pointer‑sized values, but explicit `UInt<32>` or `UInt<64>` may always be used instead.
 
 **Q: What happens with `MIN / -1` for signed integers?**
-A: This case always traps regardless of the type’s overflow policy. It is a representability issue, not a standard overflow. The compiler attempts to statically prove this case unreachable when possible.
+A: This case always traps regardless of the type's overflow policy. It is a representability issue, not a standard overflow. The compiler attempts to statically prove this case unreachable when possible.
 
 **Q: How do I define and implement a trait?**
-A: Use `trait TraitName { ... }` to define methods and associated types. Use `impl TraitName for MyType { ... }` to provide implementations. See the “Traits and Implementations” section for details.
+A: Use `trait TraitName { ... }` to define methods and associated types. Use `impl TraitName for MyType { ... }` to provide implementations. See the "Traits and Implementations" section for details.
 
 **Q: What does `exists` mean in a type definition?**
 A: `exists n: BaseType invariant P(n)` introduces a name for the value being constrained. It is required when the invariant expression refers to the value itself. The bound name is erased at runtime.
@@ -1007,7 +1062,25 @@ A: `move` explicitly transfers ownership of a non‑`Copy` value in assignments,
 A: No. All `extern "C"` functions are inherently unsafe and can only be called inside `unsafe` blocks or `@trusted` functions. This ensures all FFI calls are auditable.
 
 **Q: How should `catch` patterns be written?**
-A: `catch` branches use the enum variant names directly (e.g., `|IoError| { ... }`), without qualifying them with the enum type. The error type is already known from the expression being caught.
+A: `catch` branches use the enum variant names directly (e.g., `|IoError| { ... }`), without qualifying them with the enum type. The error type is already known from the expression being caught. The `as` keyword can bind the error value to a local variable.
 
 **Q: What is dynamic dispatch and how do I use it?**
 A: Dynamic dispatch is available via `dyn Trait` objects, which use a vtable for method calls. Use them explicitly when static dispatch is not possible, such as storing heterogeneous types in a collection. This makes runtime dispatch visible to reviewers.
+
+**Q: How do `decreases` and `terminates` work?**
+A: `decreases expr` on a loop guarantees termination by requiring `expr` to be a non‑negative integer that strictly decreases each iteration. `terminates arg` on a recursive function requires the specified argument to strictly decrease on each recursive call with a lower bound. Both are used by the compiler to prove termination, which is essential for safety‑critical systems and WCET analysis.
+
+**Q: How do I write integer literals with a specific bit width?**
+A: Use the `42i32` suffix for `Int<32>` or `0xFFu8` for `UInt<8>`. This is syntactic sugar for `42: Int<32>` and `0xFF: UInt<8>`, respectively. The type is fully checked by the compiler.
+
+**Q: What is the `isolate` block?**
+A: An `isolate` block guarantees that the enclosed code does not access any external mutable state. The compiler verifies this statically, enabling safe concurrent execution from multiple interrupt or task contexts.
+
+**Q: What is conditional compilation (`@cfg`)?**
+A: The `@cfg(condition)` attribute allows modules, functions, or type definitions to be conditionally included based on target platform, features, or other compile‑time predicates. In strict mode, all compilation paths must be reachable under some configuration.
+
+**Q: What is `layout_of!`?**
+A: `layout_of!(T)` is a compile‑time reflection function that returns a `LayoutDescriptor` detailing the exact size, alignment, and field offsets of type `T`. It is essential for verifying hardware‑facing layouts in `comptime` code.
+
+**Q: How do `@hint` attributes help with proofs?**
+A: `@hint(assertion)` provides a suggestion to the SMT solver during contract verification. It guides the solver's search without affecting runtime behavior or safety guarantees. Useful when automatic proof search needs additional domain knowledge.
