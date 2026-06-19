@@ -34,14 +34,37 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 - Integer suffixes for explicit bit-width: `42i32` (equivalent to `42: Int<32>`), `0xFFu8` (equivalent to `0xFF: UInt<8>`). The suffix is syntactic sugar and the type is fully checked.
 - Floats: `3.14`, `2.5e-3` (type `Float<64>` by default)
 - Characters: `'a'` (UTF-8, type `UInt<8>`)
-- Byte strings: `b"hello\n"` (type `&[Byte]`)
-- Strings: `"hello"` (type `&Str`, guaranteed valid UTF-8)
+- Byte strings: `b"hello\n"` (type `&[Byte]`, see Escape Sequences)
+- Strings: `"hello"` (type `&Str`, guaranteed valid UTF-8, see Escape Sequences)
 - Booleans: `true`, `false`
+
+### Escape Sequences
+
+The following escape sequences are recognized in string literals, byte string literals, and character literals. They are resolved by the lexer at compile time and replaced with the corresponding byte or Unicode scalar value.
+
+| Sequence | Name | Byte Value |
+|----------|------|------------|
+| `\n` | Line Feed | 0x0A |
+| `\r` | Carriage Return | 0x0D |
+| `\t` | Horizontal Tab | 0x09 |
+| `\\` | Backslash | 0x5C |
+| `\"` | Double Quote | 0x22 |
+| `\'` | Single Quote | 0x27 |
+| `\0` | Null Character | 0x00 |
+| `\xNN` | Hex Byte (2 digits) | 0xNN |
+| `\u{NNNNNN}` | Unicode Scalar (1-6 hex digits) | UTF-8 encoded bytes |
+
+In character literals (`'...'`), the escape must resolve to exactly one valid Unicode scalar value.
+
+In byte strings (`b"..."`) and byte characters, `\u{...}` is not valid (byte strings contain raw bytes, not UTF-8).
+
+The sequences `\a`, `\b`, `\v`, `\f`, and `\?` are not recognized in Posita string literals. If needed, use the equivalent `\xNN` form.
 
 ### Comments
 - Line comment: `// ...`
 - Block comment: `/* ... */`
 - Documentation comment: `/// ...` (Markdown, code examples are automatically verified as `@comptime_test`)
+- Module-level documentation comment: `//! ...` (applies to the enclosing module)
 
 ---
 
@@ -628,6 +651,13 @@ comptime {
 ```
 Public reflection (`@typeInfo!`) only exposes `pub` items. Internal reflection (`@typeInfo!` with full access) is available only inside `@trusted` comptime blocks.
 
+### Built‑in Compile‑Time Utilities
+
+The following utilities are available in `comptime` contexts:
+
+- **`assert(condition)`**: Evaluates `condition` at compile time. If the condition is `false`, compilation halts with an error message. `assert` is stripped from the final binary and cannot be used for runtime checks.
+- **`@compile_error("msg")`**: Unconditionally halts compilation with the given message. Typically used in `comptime` to reject invalid code generation or type combinations.
+
 ### Optimization Hooks (advanced)
 ```posita
 comptime {
@@ -738,6 +768,22 @@ Dereference: `*ptr`
 Address‑of: `&var`
 Cast: `value as NewType` (safe), `value as! NewType` (bitcast)
 Rounding suffixes for float‑to‑int conversion: `round`, `trunc` (default), `ceil`, `floor`.
+
+**Operator precedence** (highest to lowest):
+
+| Precedence | Operators | Associativity |
+|------------|-----------|---------------|
+| 1 (highest) | `*`, `/`, `%` | left-to-right |
+| 2 | `+`, `-` | left-to-right |
+| 3 | `<<`, `>>` | left-to-right |
+| 4 | `&` | left-to-right |
+| 5 | `^` | left-to-right |
+| 6 | `\|` | left-to-right |
+| 7 | `==`, `!=`, `<`, `>`, `<=`, `>=` | left-to-right |
+| 8 | `and` | left-to-right |
+| 9 | `or` | left-to-right |
+| 10 | `not` | right-to-left (prefix) |
+| 11 (lowest) | `..`, `..=` | left-to-right |
 
 **`as!` layout compatibility**: The compiler verifies that the source and target types have the same size and alignment via `layout_of!`, or, in the case of truncation, that the truncated value does not violate the target type's `invariant`. All uses of `as!` are flagged by `capsa audit` for mandatory human review.
 
