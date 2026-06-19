@@ -21,7 +21,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
 `catch`, `panic`, `unsafe`, `let`, `finally`,
-`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`, `no_alloc_error`, `no_panic`, `debug_info`, `old`, `audit_log`
+`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`, `no_alloc_error`, `no_panic`, `debug_info`, `old`, `audit_log`, `interrupt`
 
 `Int`, `UInt`, `Ptr`, `Str`, `String`, `Result`, `Option`, `usize`, `Float` are built-in type constructors, not reserved words.  
 `linear`, `consume` are planned keywords; `dyn`, `by` are reserved for future use.
@@ -315,6 +315,7 @@ The following attributes are not layout‑specific but affect language semantics
 | `@exhaustive` | Enum | Requires all `match`, `if let`, and `while let` on the enum to be exhaustive. |
 | `@debug_info` | Function, Module | Controls which symbols are emitted into debug information. Supports minimal exposure for safety‑critical deployments. |
 | `@audit_log` | Function | Marks a function whose runtime contract violations must be written to an immutable audit log. The storage backend is defined by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended. |
+| `@interrupt(irq, priority?)` | Function | Marks an interrupt handler; implicitly `@no_alloc`, `@no_panic`, return type `!`. |
 
 **Attribute compatibility and precedence**: When multiple attributes are combined, the compiler follows a strict ordering:
 1. `@cfg` is evaluated first (determines existence of the item).
@@ -322,7 +323,7 @@ The following attributes are not layout‑specific but affect language semantics
 3. Contract‑related attributes (`@trusted`, `@runtime_check`, `@link_proof`, `@lemma`) are processed.
 4. Code‑generation attributes (`@inline`, `@noinline`, `@tailrec`) are applied last.
 
-Incompatible combinations (e.g., `@pure` + `@runtime_check`, `@pure` + `@io`, `@runtime_check` + `@lemma`) are rejected at compile time.
+Incompatible combinations (e.g., `@pure` + `@runtime_check`, `@pure` + `@io`, `@runtime_check` + `@lemma`, `@trusted` + `@runtime_check`) are rejected at compile time.
 
 ### Type Attributes
 Access compile‑time properties using `'`:
@@ -451,6 +452,7 @@ trait Clone {
     def clone(&self) -> Self;
 }
 ```
+Within a trait definition, `type Name = DefaultType;` declares an associated type with a default value. Implementations may override the default or use it as‑is.
 
 ### Implementing a Trait
 ```posita
