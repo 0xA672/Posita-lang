@@ -1,7 +1,7 @@
 # Posita Compiler Implementation Guide (IMPL.md)
 
 **Status:** Working draft — intended for compiler contributors.
-**Last updated:** 2026-06-19
+**Last updated:** 2026-06-19 (updated to reflect current progress)
 
 ## 1. Overview
 
@@ -9,7 +9,7 @@ This document outlines the architecture, technology choices, and development roa
 
 ### Core principles for the compiler
 - **Correctness first**: The compiler must faithfully implement the Posita safety guarantees.
-- **Compilation speed is a feature**: Posita’s “compile-time first” philosophy means the compiler itself must be fast and predictable.
+- **Compilation speed is a feature**: Posita's "compile-time first" philosophy means the compiler itself must be fast and predictable.
 - **Modular and testable**: Each stage should be independently testable with clear input/output contracts.
 - **Written in Rust**: The compiler is implemented in Rust, leveraging its strong type system and existing ecosystem for compiler construction (Cranelift, etc.).
 
@@ -18,7 +18,7 @@ This document outlines the architecture, technology choices, and development roa
 | Component | Technology | Rationale |
 |-----------|------------|-----------|
 | **Language** | Rust | Safety, performance, strong ecosystem for compiler construction, seamless Cranelift integration. |
-| **Lexer** | `logos` | Fast, zero-allocation lexer generator with great error messages. |
+| **Lexer** | `logos` | Fast, zero-allocation lexer generator. Already implemented and tested with full keyword, operator, and literal support, including complex escape sequences in character/string literals. |
 | **Parser** | Hand-written recursive descent | Full control over error recovery and diagnostics; Posita grammar is designed to be LL(1) with minimal lookahead. |
 | **IRs** | Custom HIR, MIR (Rust structs) | HIR preserves source-level structure; MIR is a typed, SSA-like mid-level representation. |
 | **Backend** | Cranelift (primary), LLVM (optional future) | Cranelift for fast AOT/JIT compilation; LLVM as an optional high-optimization backend. |
@@ -33,10 +33,10 @@ This document outlines the architecture, technology choices, and development roa
 Source file (.ps)
     │
     ▼
-Lexer (logos) ──► Token stream
+Lexer (logos) ──► Token stream   [DONE]
     │
     ▼
-Parser (hand-written) ──► Concrete Syntax Tree (CST) / AST
+Parser (hand-written) ──► Concrete Syntax Tree (CST) / AST   [IN PROGRESS]
     │
     ▼
 AstLowering ──► High-level IR (HIR) with resolved names and types
@@ -59,10 +59,10 @@ All stages maintain diagnostic information (source locations, spans) for error r
 ## 4. Implementation Stages
 
 ### Stage 0: Bootstrapping the Compiler Shell
-- Set up Rust project with `clap` CLI.
-- Implement basic lexer using `logos` (keywords, operators, literals, comments).
-- Implement a minimal parser that can handle a “hello world” program: `def main() { }`.
-- Integrate Cranelift to produce an executable for this minimal program.
+- [x] Set up Rust project with `clap` CLI.
+- [x] Implement lexer using `logos` (keywords, operators, literals, comments). All token types defined and covered by 55+ tests. Includes correct handling of escape sequences, integer overflow errors, and apostrophe/attribute-access disambiguation.
+- [ ] Implement a minimal parser that can handle a "hello world" program: `def main() { }`.
+- [ ] Integrate Cranelift to produce an executable for this minimal program.
 - **Goal**: `ponent run hello.ps` compiles and runs a trivial program.
 
 ### Stage 1: Core Type System and Expressions
@@ -123,10 +123,10 @@ All stages maintain diagnostic information (source locations, spans) for error r
 ### 5.1 Memory Management
 Posita does not use a garbage collector. The compiler will implement:
 - **Copy semantics** by default for `Copy` types.
-- **Move semantics** for non-`Copy` types, with the help of a **borrow checker** (similar to Rust’s NLL). The MIR will contain explicit `move` and `copy` operations. The compiler will track ownership and insert drops at the end of scopes.
+- **Move semantics** for non-`Copy` types, with the help of a **borrow checker** (similar to Rust's NLL). The MIR will contain explicit `move` and `copy` operations. The compiler will track ownership and insert drops at the end of scopes.
 
 ### 5.2 Integer Representation
-`Int<N>` and `UInt<N>` are mapped to Cranelift’s `iN` types where available, or legalized to the next larger supported integer with appropriate truncation/extension. Overflow checks are inserted according to the declared policy (wrapping, saturating, trapping).
+`Int<N>` and `UInt<N>` are mapped to Cranelift's `iN` types where available, or legalized to the next larger supported integer with appropriate truncation/extension. Overflow checks are inserted according to the declared policy (wrapping, saturating, trapping).
 
 ### 5.3 Contract Verification
 The MIR will be translated into Z3 assertions when strict mode is enabled. The compiler will:
@@ -158,6 +158,14 @@ All diagnostics will include source location, a clear message, and optionally a 
 
 We welcome contributions! Please read `CONTRIBUTING.md` for details. The compiler source will be in the `compiler/` directory of the main Posita repository. Each stage has its own module with clear entry points. Start by picking an issue labeled `good-first-issue` related to Stage 0.
 
-## 8. Conclusion
+## 8. Current Status & Short-term Roadmap
 
-This roadmap aims to deliver a working, safe, and efficient Posita compiler incrementally, with a focus on the language’s unique guarantees. The initial stages will produce a usable subset quickly, allowing community experimentation and feedback while the full vision is realized. Let’s bring ultra-static typing to reality.
+- Lexer: Complete (all tokens defined, 55+ tests passing, integer overflow errors, proper escape handling). See `src/lexer.rs`.
+- Parser: Beginning implementation. Task: Build a hand-written recursive descent parser that produces an AST. First target: parse `def main() {}` and print the AST.
+- CLI: Skeleton exists using `clap`, can be extended to support `ponent lex`, `ponent parse`, etc.
+
+The immediate next step is designing the AST data structures and implementing the parser for the simplest program structure. After that, code generation via Cranelift will be added incrementally.
+
+## 9. Conclusion
+
+This roadmap aims to deliver a working, safe, and efficient Posita compiler incrementally, with a focus on the language's unique guarantees. The initial stages will produce a usable subset quickly, allowing community experimentation and feedback while the full vision is realized. Let's bring ultra-static typing to reality.
