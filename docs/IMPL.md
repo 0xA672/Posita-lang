@@ -1,16 +1,17 @@
-# Posita Compiler Implementation Guide
+# Posita Compiler Implementation Guide (IMPL.md)
+
 **Status:** Working draft — intended for compiler contributors.
-**Last updated:** 2026-06-11
+**Last updated:** 2026-06-19
 
 ## 1. Overview
 
-This document outlines the architecture, technology choices, and development roadmap for the Posita compiler. It is a living guide, evolving alongside the language specification.
+This document outlines the architecture, technology choices, and development roadmap for the Posita compiler, **`ponent`**. It is a living guide, evolving alongside the language specification [`SYNTAX.md`](docs/SYNTAX.md).
 
 ### Core principles for the compiler
 - **Correctness first**: The compiler must faithfully implement the Posita safety guarantees.
 - **Compilation speed is a feature**: Posita’s “compile-time first” philosophy means the compiler itself must be fast and predictable.
 - **Modular and testable**: Each stage should be independently testable with clear input/output contracts.
-- **Written in Rust**: The compiler is implemented in Rust, leveraging its strong type system and existing ecosystem for compilers (Cranelift, etc.).
+- **Written in Rust**: The compiler is implemented in Rust, leveraging its strong type system and existing ecosystem for compiler construction (Cranelift, etc.).
 
 ## 2. Technology Stack
 
@@ -62,7 +63,7 @@ All stages maintain diagnostic information (source locations, spans) for error r
 - Implement basic lexer using `logos` (keywords, operators, literals, comments).
 - Implement a minimal parser that can handle a “hello world” program: `def main() { }`.
 - Integrate Cranelift to produce an executable for this minimal program.
-- **Goal**: `posita run hello.ps` compiles and runs a trivial program.
+- **Goal**: `ponent run hello.ps` compiles and runs a trivial program.
 
 ### Stage 1: Core Type System and Expressions
 - Implement AST nodes for all primitive types: `Int<N>`, `UInt<N>`, `Bool`, `Float`, etc.
@@ -98,6 +99,7 @@ All stages maintain diagnostic information (source locations, spans) for error r
 - Static contract verification using Z3 (strict mode).
 - `@trusted` and `@experimental` attributes.
 - `invariant` on types and loops (verification hooks).
+- `@runtime_check` attribute.
 - **Goal**: Strict Mode can verify simple contracts automatically.
 
 ### Stage 5: Concurrency and System Programming
@@ -113,6 +115,7 @@ All stages maintain diagnostic information (source locations, spans) for error r
 - Package manager (`capsa`).
 - Debugger integration (DWARF support).
 - Documentation generator.
+- Code formatter (`ponent fmt`).
 - **Goal**: Posita is usable for production projects.
 
 ## 5. Key Design Decisions for the Compiler
