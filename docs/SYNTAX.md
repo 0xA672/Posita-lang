@@ -21,7 +21,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
 `catch`, `panic`, `unsafe`, `let`, `finally`,
-`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`
+`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`
 
 `Int`, `UInt`, `Ptr`, `Str`, `String`, `Result`, `Option`, `usize`, `Float` are built-in type constructors, not reserved words.  
 `linear`, `consume` are planned keywords; `dyn`, `by` are reserved for future use.
@@ -185,6 +185,8 @@ type NonZeroInt = exists n: Int<32>
 ```
 The `exists` keyword introduces a name for the value being constrained. This name can be used in the invariant expression and is erased at runtime.
 
+**Implicit invariant propagation**: All functions automatically inherit `requires` that their parameters satisfy type invariants, and `ensures` that their return values satisfy type invariants. This eliminates redundant contract repetition.
+
 ### Composite Types
 - Arrays: `[T; N]` (fixed size), `[T]` (slice, usually behind a reference).
 - Tuples: `(T1, T2, ...)`
@@ -210,6 +212,7 @@ The `exists` keyword introduces a name for the value being constrained. This nam
       Stopped,
   } with missing_match = "You must handle all three states: Init, Running, and Stopped.";
   ```
+  The `@exhaustive` attribute on an enum forces all `match`, `if let`, and `while let` sites to be exhaustive, preventing future variants from being silently ignored.
 
 ### Layout Control Attributes
 Fine‑grained control for hardware registers and protocols:
@@ -242,7 +245,7 @@ The following attributes are not layout‑specific but affect language semantics
 | `@inline` | Function | Forces inlining at call sites; compile error if not possible |
 | `@noinline` | Function | Prevents inlining of the function |
 | `@must_use` | Function, Type | Compiler warns if the return value is silently discarded. `Result` and `Option` are implicitly `@must_use`. |
-| `@must_handle(Variant1, ...)` | Function (returning `Result`) | Compiler warns if the caller does not explicitly match or catch the listed error variants. Provides finer‑grained error accountability than `@must_use`. |
+| `@must_handle(Variant1, ...)` | Function (returning `Result`) | Compiler warns if the caller does not explicitly match or catch the listed error variants. Provides finer‑grained error accountability. |
 | `@tailrec` | Function | Verifies that all recursive calls are in tail position and enforces tail‑call optimization; compile error if not possible |
 | `@lemma` | Function | Marks a `comptime` proof helper that returns assertions for the SMT solver |
 | `@apply_lemma(...)` | Function | Applies a lemma (by name) to supply the SMT solver with additional assertions during verification |
@@ -257,6 +260,15 @@ The following attributes are not layout‑specific but affect language semantics
 | `@runtime_check` | Function | Defers contract checking to runtime, even if arguments are compile‑time known. Overrides strict mode locally. |
 | `@cfg(condition)` | Module, Function | Conditional compilation. The condition may refer to target platform, features, etc. Only paths that compile under the configuration are permitted in strict mode. |
 | `@hint(assertion)` | Function, Loop | Provides a hint to the SMT solver to guide proof search. Hints do not affect runtime behavior. |
+| `@exhaustive` | Enum | Requires all `match`, `if let`, and `while let` on the enum to be exhaustive. |
+
+**Attribute compatibility and precedence**: When multiple attributes are combined, the compiler follows a strict ordering:
+1. `@cfg` is evaluated first (determines existence of the item).
+2. Effect annotations (`@pure`, `@io`, `@alloc`, `@no_alloc`) are checked for consistency.
+3. Contract‑related attributes (`@trusted`, `@runtime_check`, `@link_proof`, `@lemma`) are processed.
+4. Code‑generation attributes (`@inline`, `@noinline`, `@tailrec`) are applied last.
+
+Incompatible combinations (e.g., `@pure` + `@runtime_check`) are rejected at compile time.
 
 ### Type Attributes
 Access compile‑time properties using `'`:
@@ -329,6 +341,8 @@ Functions may be annotated with fine‑grained effect markers to describe their 
 - **`@trusted`**: The function contains `unsafe` operations and establishes a trust boundary; it must carry `requires`/`ensures` contracts.
 
 In strict mode the compiler verifies that effect annotations are consistent across call chains. A function calling an `@io(write)` function must itself be annotated at least `@io(write)`.
+
+**Closure effect inference**: A closure's effect annotation is the union of the effects of its captured variables and its body. The compiler automatically derives this union and annotates the closure type.
 
 ### The `unsafe` Keyword
 `unsafe` allows escape hatches (inline assembly, raw pointer manipulation, C FFI). All `unsafe` operations must be encapsulated in an `@trusted` function with `requires`/`ensures` contracts. The compiler trusts these contracts as axioms, and they are auditable via `capsa audit`.
@@ -750,7 +764,8 @@ let data = fetch() catch {
     // other errors can still fall through
 };
 ```
-In strict mode, the warning becomes an error.
+In strict mode, the warning becomes an error.  
+**Interaction with `?`**: Propagating an error via `?` does **not** count as handling for the purposes of `@must_handle`. The caller must explicitly match the variant or use `delegate()` to explicitly pass the responsibility upstream.
 
 ---
 
@@ -758,10 +773,18 @@ In strict mode, the warning becomes an error.
 
 ### Function Contracts
 - `requires`: a precondition.
-- `ensures`: a postcondition.
+- `ensures`: a postcondition. Applies to **all** exit paths unless explicitly qualified with `on Ok(...)` or `on Err(...)`.
 - `terminates`: a termination measure. For recursive functions, the argument specified must strictly decrease on each recursive call and have a lower bound, ensuring the recursion always terminates.
 
-Contracts are evaluated in the mathematical integer domain (ideal precision).
+Contracts are evaluated in the mathematical integer domain (ideal precision) by default. For floating‑point contracts, `ensures with ieee_precision` switches to IEEE 754 semantics.
+```posita
+def sqrt_approx(x: Float<64>) -> Float<64>
+    requires x >= 0.0
+    ensures abs(result * result - x) <= 1e-10
+    ensures with ieee_precision
+{ ... }
+```
+
 ```posita
 def divide(a: Int<32>, b: Int<32>) -> Int<32>
     requires b != 0
@@ -843,6 +866,20 @@ comptime def vec<T>(...args: T) -> Vector<T> {
 }
 set v = vec!(1, 2, 3);  // Creates Vector<Int<32>> via explicit comptime function
 ```
+
+---
+
+## Compiler Diagnostics
+
+The compiler provides three diagnostic levels for contract verification failures:
+
+| Level | Name | Purpose | Output |
+|-------|------|---------|--------|
+| **L1** | **Locate** | Quickly find the problem | Source file, line, column, violated clause |
+| **L2** | **Explain** | Understand the cause | Counterexample in Posita syntax, data‑flow trace |
+| **L3** | **Debug** | Deep analysis | SMT‑LIB script, solver statistics, unsat core |
+
+Developers select the level via `capsa build --diagnostic-level=N`. When a contract fails, the compiler attempts to produce a minimal counterexample and a specific suggestion for how to fix it.
 
 ---
 
@@ -978,7 +1015,7 @@ def main() -> Result<(), AppError> {
 - **From Rust**: `Result`‑based error handling (without type erasure), `if let`, `match`, trait‑like generics, borrow checker.
 - **From Zig**: The `comptime` mechanism and the philosophy of moving work to compile time are direct inspirations. Posita adds the `!` call marker and integrates `comptime` with SMT‑based contract verification, going beyond what Zig's comptime offers.
 - **From ATS**: The concept of encoding invariants in types and the ambition to eliminate runtime errors through static proofs have influenced Posita. ATS is a secondary inspiration after Ada, Rust, and Zig.
-- **Unique to Posita**: bit‑width parameterized integers with explicit overflow control, orthogonal pointer sizes, type‑level defaults with invariants and `no_default`, `leave`/`leave with`, type capture, fully static error monomorphization, compile‑time type factories, reflection, structured `finally` blocks, systematic UB elimination, optional strict mode, ghost variables, specification tags, named scope cleanup, construction validation, lemma functions, fine‑grained effect annotations, deferred contract checking (`@runtime_check`), layout reflection (`layout_of!`), proof hints (`@hint`), and fine‑grained error accountability (`@must_handle`).
+- **Unique to Posita**: bit‑width parameterized integers with explicit overflow control, orthogonal pointer sizes, type‑level defaults with invariants and `no_default`, `leave`/`leave with`, type capture, fully static error monomorphization, compile‑time type factories, reflection, structured `finally` blocks, systematic UB elimination, optional strict mode, ghost variables, specification tags, named scope cleanup, construction validation, lemma functions, fine‑grained effect annotations, deferred contract checking (`@runtime_check`), layout reflection (`layout_of!`), proof hints (`@hint`), fine‑grained error accountability (`@must_handle`), tiered diagnostics, and implicit invariant propagation.
 
 ---
 
@@ -1118,3 +1155,12 @@ A: `@hint(assertion)` provides a suggestion to the SMT solver during contract ve
 
 **Q: What are `@must_handle` and how is it different from `@must_use`?**
 A: `@must_use` warns if the entire return value is ignored. `@must_handle` is more specific: it lets a library author name particular error variants that the caller must explicitly handle (via `catch` or `match`), even if other variants are handled by a wildcard. This ensures critical failure modes never slip through silently.
+
+**Q: What is `@exhaustive`?**
+A: `@exhaustive` on an enum definition forces all `match`, `if let`, and `while let` on that enum to be exhaustive. This prevents new variants added during evolution from being silently ignored in existing code.
+
+**Q: How do contracts interact with error paths?**
+A: By default, `ensures` applies to all exit paths. You can specialize with `ensures on Ok(result) => ...` and `ensures on Err(error) => ...` to make guarantees specific to success or failure returns.
+
+**Q: How does the compiler help me debug contract failures?**
+A: The compiler provides three diagnostic levels (L1: locate, L2: explain with counterexamples, L3: full SMT‑LIB dump). Use `capsa build --diagnostic-level=N` to select the depth of information.
