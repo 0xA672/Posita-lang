@@ -23,10 +23,12 @@ name = "my_safety_app"
 version = "0.1.0"
 edition = "2026"
 strict = true                     # Enforce strict mode globally
+minimum-safety-level = 2          # Require all dependencies to be at least Verified
 
 [dependencies]
 libmath = { version = "1.2", path = "../libmath" }
 libhal  = { version = "0.3", registry = "default" }
+legacy-driver = { version = "0.9", allow-level = 1, audited-by = "security-team" }
 
 [dev-dependencies]
 posita-test = "0.5"
@@ -42,7 +44,8 @@ optimization = "size"             # Options: speed, size, none
 |-------|-------------|
 | `[package].edition` | The language edition. Ensures consistent behavior across compiler versions. |
 | `[package].strict` | Enables strict mode project-wide. All contracts must be proven, `@trusted` blocks require evidence. |
-| `[dependencies]`   | Supports local paths, Git repositories, and the official registry. |
+| `[package].minimum-safety-level` | (Optional) Minimum required safety level (0-3) for all direct and transitive dependencies. Build fails if any dependency falls below this level. |
+| `[dependencies]`   | Supports local paths, Git repositories, and the official registry. Per-dependency overrides like `allow-level` permit specific exceptions when accompanied by an audit trail. |
 | `[build].target`   | Explicitly sets the cross-compilation target. |
 | `[build].optimization` | `speed`, `size`, or `none`. In strict mode, defaults to `size` for deterministic performance. |
 
@@ -53,6 +56,17 @@ optimization = "size"             # Options: speed, size, none
 - **Full graph resolution**: All transitive dependencies are flattened and checked for compatibility. Unresolvable conflicts (e.g., diamond dependencies) produce a clear error requiring manual intervention.
 - **Lock file (`posita.lock`)**: Records exact versions, sources, and integrity hashes (SHA-256). Ensures fully reproducible builds.
 - **CWA enforcement**: In strict mode, `capsa` scans the entire dependency tree. Any dependency containing unverified `unsafe` blocks, or `extern "C"` calls without contractual wrappers, is flagged. The build can be configured to either warn or fail based on security requirements.
+
+### Platform-Specific Dependencies
+
+Dependencies can be conditionally specified based on the target platform:
+
+```toml
+[target.'cfg(target_os = "linux")'.dependencies]
+libhal-linux = "0.2"
+```
+
+`capsa` resolves the correct dependency graph for each configuration and ensures all reachable configurations satisfy the project's safety level.
 
 ## 4. Security and Safety Integration
 
@@ -88,11 +102,37 @@ The `capsa audit` command scans the entire project and its dependencies to:
 
 This report serves as a security certification artifact for standards like DO-178C or ISO 26262.
 
-### 4.4 External Proof Verification
+### 4.4 Standardized Audit Output
+
+`capsa audit` produces a machine-readable report in SARIF or JSON format containing:
+
+- Per-module `unsafe` counts and locations.
+- Contract status for each `@trusted` function (proven/unproven/manual review).
+- Effect annotation inconsistency listings.
+- External proof file status (from `proofs.toml`).
+- Safety level calculation basis.
+
+This output is consumable by CI systems for automated gating and visualization.
+
+### 4.5 Vulnerability Advisories
+
+Packages may include a `SECURITY.toml` file describing known vulnerabilities:
+
+```toml
+[[advisory]]
+id = "RUSTSEC-2026-0001"
+package = "libcrypto"
+patched_versions = ">= 0.8.1"
+description = "Buffer overflow in decryption routine"
+```
+
+`capsa audit` checks the dependency graph against these advisories and reports any unpatched vulnerabilities. The registry also provides an API for fetching the latest advisory database.
+
+### 4.6 External Proof Verification
 
 If a `@trusted` function references an external formal proof (e.g., a Coq file via `@link_proof`), `capsa` verifies the existence and hash of the proof file during both publishing and installation. The proof is distributed alongside the package, enabling independent verification by auditors.
 
-Additionally, projects can include a `proofs.toml` manifest at their root to systematically manage all external proofs:
+Projects can include a `proofs.toml` manifest to systematically manage all external proofs:
 
 ```toml
 [proofs]
@@ -106,7 +146,17 @@ depends_on = ["memory_model"]
 verified_by = "Coq 8.18"
 ```
 
-`capsa audit` cross-checks every `@link_proof` reference against this manifest. Unregistered proof files trigger an error in strict mode. This provides a configuration-management layer for verification assets, satisfying DO-178C requirements.
+`capsa audit` cross-checks every `@link_proof` reference against this manifest. Unregistered proof files trigger an error in strict mode.
+
+### 4.7 Proof Obligation Management and Audit Signatures
+
+After running `capsa audit`, a list of proof obligations is generated for items that could not be automatically verified (e.g., unproven contracts, uncovered `@trusted` blocks). Reviewers can digitally sign these obligations:
+
+```bash
+capsa approve --obligation-id OBL-001 --signer "alice@example.com"
+```
+
+Signatures are stored in the `audit/` directory and versioned alongside the code. `capsa verify` checks that all obligations have been approved, forming a traceable audit chain that satisfies DO-178C manual review requirements.
 
 ## 5. Publishing and the Registry
 
@@ -114,7 +164,17 @@ verified_by = "Coq 8.18"
 
 `capsa` connects to `registry.posita-lang.org` by default. This registry is similar to `crates.io` but with a focus on safety metadata.
 
-### 5.2 Publishing Workflow (`capsa publish`)
+### 5.2 Supply Chain Integrity
+
+`capsa` uses a TUF (The Update Framework)-style signature mechanism:
+
+- Package publishers sign their `posita.toml` and `posita.lock` with a cryptographic key.
+- The registry maintains a root signature over all metadata timestamps and version lists.
+- `capsa` verifies the signature chain during installation, ensuring integrity from publisher to consumer.
+
+Optional support for private PKI is available for air-gapped or enterprise environments.
+
+### 5.3 Publishing Workflow (`capsa publish`)
 
 Before a package can be published, `capsa` enforces the following:
 
@@ -126,7 +186,7 @@ Before a package can be published, `capsa` enforces the following:
    - A signed summary from the registry's verification service.
 3. **Tamper-proofing**: The evidence bundle is cryptographically signed and linked to the exact source code hash. Any mismatch during installation triggers a security warning.
 
-### 5.3 Safety Levels
+### 5.4 Safety Levels
 
 Packages in the registry are classified into four safety levels:
 
@@ -139,7 +199,26 @@ Packages in the registry are classified into four safety levels:
 
 These levels are prominently displayed on the registry and in `capsa search` output.
 
-## 6. The `capsa` CLI
+## 6. Reproducible Builds
+
+`capsa build --reproducible` ensures that the build output matches the expected hash recorded in the lock file. Build environment constraints (compiler version, target triple, `@cfg` conditions) can be declared in `capsa.toml` and are verified during the build.
+
+The registry may store a "reproducible build certificate" for published packages, allowing installers to independently rebuild and compare hashes, ensuring the binary has not been tampered with.
+
+## 7. Certification Report Generation (`capsa certify`)
+
+`capsa certify` integrates all security evidence into a comprehensive certification report suitable for standards such as DO-178C and ISO 26262. The report includes:
+
+- Traceability matrix (`@spec` → code).
+- Contract verification statistics and unproven items.
+- `unsafe` usage summary with review signatures.
+- Full dependency graph with safety levels.
+- External proof asset inventory with hash verification status.
+- Build environment record and reproducibility proof.
+
+This transforms Posita/Capsa from a development tool into a certification deliverable generator.
+
+## 8. The `capsa` CLI
 
 `capsa` provides a familiar, Cargo-like experience:
 
@@ -162,8 +241,14 @@ capsa test
 # Auditing the project and its dependencies for safety
 capsa audit
 
+# Approving a proof obligation
+capsa approve --obligation-id OBL-001
+
 # Generating a traceability matrix from @spec tags
 capsa spec
+
+# Generating a full certification report
+capsa certify
 
 # Updating dependencies to their latest compatible versions
 capsa update
@@ -175,7 +260,25 @@ capsa fmt
 capsa install
 ```
 
-## 7. Private Registries and Enterprise Policies
+## 9. Workspace Support
+
+For large-scale projects, `capsa` supports workspaces defined in a root `posita.toml`:
+
+```toml
+[workspace]
+members = ["crate_a", "crate_b", "crate_c"]
+
+[workspace.package]
+edition = "2026"
+strict = true
+minimum-safety-level = 2
+```
+
+- Global safety policies are inherited by all workspace members unless explicitly overridden.
+- `capsa audit` and `capsa certify` generate merged reports across the entire workspace.
+- Proof obligations can be shared across workspace members, avoiding duplicate review efforts.
+
+## 10. Private Registries and Enterprise Policies
 
 `capsa` supports configuring private registries for internal or proprietary use. Enterprises can enforce additional policies:
 
@@ -185,7 +288,7 @@ capsa install
 
 These policies are defined in a `capsa.toml` configuration file at the project or organization level.
 
-## 8. Comparison with Cargo
+## 11. Comparison with Cargo
 
 | Feature | Cargo | Capsa |
 |---------|-------|-------|
@@ -197,10 +300,13 @@ These policies are defined in a `capsa.toml` configuration file at the project o
 | **`unsafe` isolation** | None | **Automated reporting and enforcement** |
 | **External proof integration** | None | **`@link_proof` distribution and `proofs.toml` management** |
 | **Registry safety levels** | None | **Certified, Verified, Audited, Unverified** |
+| **Audit signatures** | None | **Digital signatures on proof obligations** |
+| **Reproducible builds** | Limited support | **First-class `--reproducible` flag** |
+| **Vulnerability advisories** | External (`cargo audit`) | **Built-in with `SECURITY.toml`** |
 
-## 9. Future Plans
+## 12. Future Plans
 
 - **`capsa verify`**: A standalone command that runs a full strict-mode verification of the entire project and generates a printable "Safety Certificate" suitable for regulatory submission.
 - **Binary distribution**: Allow publishing pre-compiled, contract-signed binaries for closed-source or confidential projects.
-- **Workspace support**: Enhanced management of multi-crate workspaces for large-scale safety-critical systems.
 - **Proof asset management**: Deeper integration with `proofs.toml` for continuous verification of external proofs in CI/CD pipelines.
+- **Compliance report customization**: Allow tailoring `capsa certify` output to specific regulatory requirements beyond DO-178C and ISO 26262.
