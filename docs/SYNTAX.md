@@ -323,28 +323,33 @@ The following attributes are not layout‑specific but affect language semantics
 | `@inline` | Function | Forces inlining at call sites; compile error if not possible |
 | `@noinline` | Function | Prevents inlining of the function |
 | `@must_use` | Function, Type | Compiler warns if the return value is silently discarded. `Result` and `Option` are implicitly `@must_use`. |
-| `@must_handle(Variant1, ...)` | Function (returning `Result`) | Compiler warns if the caller does not explicitly match or catch the listed error variants. Provides finer‑grained error accountability. |
+| `@must_handle(Variant1, ...)` | Function (returning `Result`) | Compiler warns if the caller does not explicitly match or catch the listed error variants. Variant names are resolved against the error type `E` of `Result<_, E>`. If a variant name is ambiguous in the current scope, the compiler emits an error and requires explicit qualification using `EnumName::Variant`. |
 | `@tailrec` | Function | Verifies that all recursive calls are in tail position and enforces tail‑call optimization; compile error if not possible |
-| `@lemma` | Function | Marks a `comptime` proof helper that returns assertions for the SMT solver |
-| `@apply_lemma(...)` | Function | Applies a lemma (by name) to supply the SMT solver with additional assertions during verification |
+| `@lemma` | Function (lemma provider) | Marks a `comptime` proof helper that returns assertions for the SMT solver |
+| `@apply_lemma(...)` | Function (verification target) | Applies a lemma (by name) to supply the SMT solver with additional assertions during verification of the annotated function |
 | `@trusted` | Function | Establishes a trust boundary for `unsafe` operations; requires `requires`/`ensures` contracts |
-| `@link_proof(path, hash)` | Function (`@trusted`) | References an external formal proof (e.g., Coq/ATS script) and records its SHA‑256 hash, supplementing the verification of `@trusted` code. `capsa audit` verifies the file exists and matches the hash. |
+| `@link_proof(path, hash)` | Function (`@trusted`) | References an external formal proof (e.g., Coq/ATS script) and records its SHA‑256 hash, supplementing the verification of `@trusted` code. In strict mode, every `@trusted` function must be accompanied by either `@link_proof` or at least one `@comptime_test` exercising its safety contract; otherwise compilation fails. `capsa audit` verifies the proof file exists and matches the hash. |
 | `@pure` | Function | No side effects; result depends only on arguments |
 | `@io(read)` | Function | May perform input operations |
 | `@io(write)` | Function | May perform output operations |
 | `@io` | Function | May perform any I/O (equivalent to `@io(read, write)`) |
 | `@alloc` | Function | May perform dynamic memory allocation |
-| `@no_alloc` | Function | Guarantees no dynamic allocation |
-| `@no_alloc_error` | Function | Guarantees no allocation on error paths, including `From` conversions |
-| `@no_panic` | Function | Guarantees the function never panics; compiler verifies no `trap`, bounds checks, or calls to non‑`@no_panic` functions |
+| `@no_alloc` | Function | Guarantees no dynamic allocation. This implies `@no_alloc_error`; redundant declaration of both is allowed but not required. |
+| `@no_alloc_error` | Function | Guarantees no allocation on error paths, including `From` conversions. May coexist with `@alloc` (normal paths may allocate while error paths must not). |
+| `@no_panic` | Function | Guarantees the function never panics; compiler verifies no `trap`, bounds checks, or calls to non‑`@no_panic` functions. Verification failure is a compile-time error in strict mode; in non-strict mode, the compiler emits a warning and may instrument unproven checks with a runtime panic guard. |
 | `@runtime_check` | Function | Defers contract checking to runtime, even if arguments are compile‑time known. Only allowed in non‑strict mode. |
 | `@cfg(condition)` | Module, Function | Conditional compilation with `all`, `any`, `not` combinators. The condition may refer to target platform, features, etc. Only paths that compile under the configuration are permitted in strict mode. |
-| `@hint(assertion)` | Function, Loop | Provides a hint to the SMT solver to guide proof search. Hints must be accompanied by a meta‑contract that proves the hint itself is valid. |
+| `@hint(assertion)` | Function, Loop | Provides a hint to the SMT solver to guide proof search. Hints must be accompanied by a meta‑contract that proves the hint itself is valid. Example: `@hint(forall i in 0..len: arr[i] > 0)` asserts all elements are positive within the given function or loop. |
 | `@exhaustive` | Enum | Requires all `match`, `if let`, and `while let` on the enum to be exhaustive. |
 | `@debug_info` | Function, Module | Controls which symbols are emitted into debug information. Supports minimal exposure for safety‑critical deployments. |
 | `@audit_log` | Function | Marks a function whose runtime contract violations must be written to an immutable audit log. The storage backend is defined by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended. |
-| `@interrupt(irq, priority?)` | Function | Marks an interrupt handler; implicitly `@no_alloc`, `@no_panic`, return type `!`. See "Interrupts" for full constraints. |
+| `@interrupt(irq, priority?)` | Function | Marks an interrupt handler. The compiler enforces that the function satisfies the constraints of `@no_alloc`, `@no_panic`, and return type `!`; violations are compile-time errors. Redundant explicit `@no_alloc` or `@no_panic` annotations are allowed and produce no warning. See "Interrupts" for full constraints. |
 | `@ieee_contracts` | Function | Interprets all floating‑point `requires` and `ensures` clauses on this function under IEEE 754 semantics instead of the default mathematical real domain. This attribute is not inherited by callees. |
+
+**Implicit relationships among attributes**:
+
+- `@no_alloc` implies `@no_alloc_error`; a function that never allocates trivially satisfies the no-allocation-on-error constraint.
+- `@no_alloc_error` may coexist with `@alloc`; normal paths may allocate while error paths must not.
 
 **Attribute compatibility and precedence**: When multiple attributes are combined, the compiler follows a strict ordering:
 1. `@cfg` is evaluated first (determines existence of the item).
@@ -352,7 +357,19 @@ The following attributes are not layout‑specific but affect language semantics
 3. Contract‑related attributes (`@trusted`, `@runtime_check`, `@link_proof`, `@lemma`, `@ieee_contracts`) are processed.
 4. Code‑generation attributes (`@inline`, `@noinline`, `@tailrec`) are applied last.
 
-Incompatible combinations (e.g., `@pure` + `@runtime_check`, `@pure` + `@io`, `@runtime_check` + `@lemma`, `@trusted` + `@runtime_check`, `@no_panic` + `@runtime_check`) are rejected at compile time.
+Incompatible combinations rejected at compile time:
+- `@pure` + `@runtime_check`
+- `@pure` + `@io`
+- `@runtime_check` + `@lemma`
+- `@trusted` + `@runtime_check`
+- `@no_panic` + `@runtime_check`
+- `@interrupt` + `@alloc`
+- `@interrupt` + `@io`
+
+Compatible combinations explicitly confirmed:
+- `@runtime_check` + `@ieee_contracts` (runtime checks use IEEE 754 semantics)
+- `@pure` + `@ieee_contracts` (only changes contract interpretation domain, not side effects)
+- `@no_alloc_error` + `@alloc` (normal paths may allocate, error paths must not)
 
 ### Type Attributes
 Access compile‑time properties using `'`:
@@ -426,10 +443,10 @@ Functions may be annotated with fine‑grained effect markers to describe their 
 - **`@io(read)`**: The function may perform input operations (reading files, network, etc.).
 - **`@io(write)`**: The function may perform output operations.
 - **`@io(read, write)`** or simply **`@io`**: The function may perform any I/O.
-- **`@alloc`**: The function may perform dynamic memory allocation.
-- **`@no_alloc`**: The function guarantees no dynamic allocation.
-- **`@no_alloc_error`**: The function guarantees no allocation on any error path. All `From` conversions reachable via `?` in error paths must also be `@no_alloc`.
-- **`@no_panic`**: The function never panics. The compiler statically verifies the absence of overflow traps, bounds‑check failures, or calls to non‑`@no_panic` functions. Callers are not required to be `@no_panic` themselves; the guarantee is internal to the function body.
+- **`@alloc`**: The function may perform dynamic memory allocation. May coexist with `@no_alloc_error`.
+- **`@no_alloc`**: The function guarantees no dynamic allocation. This implies `@no_alloc_error`.
+- **`@no_alloc_error`**: The function guarantees no allocation on any error path. All `From` conversions reachable via `?` in error paths must also be `@no_alloc`. May coexist with `@alloc`.
+- **`@no_panic`**: The function never panics. The compiler statically verifies the absence of overflow traps, bounds‑check failures, or calls to non‑`@no_panic` functions. Verification failure is a compile-time error in strict mode; in non-strict mode, the compiler emits a warning and may instrument unproven checks with a runtime panic guard. Callers are not required to be `@no_panic` themselves; the guarantee is internal to the function body.
 - **`@trusted`**: The function contains `unsafe` operations and establishes a trust boundary; it must carry `requires`/`ensures` contracts.
 - **`@audit_log`**: The function must write any runtime contract violation to an immutable audit log. The log storage backend is provided by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended.
 - **`@ieee_contracts`**: Interprets all floating‑point contracts (both `requires` and `ensures`) on this function under IEEE 754 semantics rather than the mathematical real domain. This attribute is scoped to the annotated function only and does not affect the contract semantics of any callees.
@@ -444,10 +461,7 @@ In strict mode the compiler verifies that effect annotations are consistent acro
 In Strict Mode, `unsafe` blocks are completely forbidden, guaranteeing UB‑free by construction.
 
 ### `@trusted` Nesting
-`@trusted` functions may call other `@trusted` functions, but the entire call chain is tracked by `capsa audit`. In strict mode, additional checks apply:
-- `@link_proof` may be required to reference an external formal proof (e.g., a Coq file with its SHA‑256 hash).
-- `@comptime_test` can provide concrete test cases that are executed at compile time.
-- If neither is possible, the dependency must be explicitly marked as `trusted = true` in `posita.toml`, indicating that it has been manually audited.
+`@trusted` functions may call other `@trusted` functions, but the entire call chain is tracked by `capsa audit`. In strict mode, every `@trusted` function must be accompanied by either `@link_proof` referencing an external formal proof, or at least one `@comptime_test` exercising its safety contract. If neither is present, compilation fails. If neither is possible, the dependency must be explicitly marked as `trusted = true` in `posita.toml`, indicating that it has been manually audited.
 
 ### `extern "C"` ABI Rules
 All `extern "C"` function declarations are **inherently unsafe** and can only be called inside `unsafe` blocks or `@trusted` functions. When a reference type (`&T`, `&[T]`, `&mut T`, `&mut [T]`) appears in the signature of an `extern "C"` function, the compiler automatically converts it to the corresponding raw C pointer for the call:
@@ -583,11 +597,12 @@ Interrupt handlers are modeled as special, highly constrained tasks:
 ```posita
 @interrupt(irq = 14)
 def timer_handler() -> ! {
-    // must be @no_alloc, @no_panic; cannot have custom parameters or return a value
+    // must satisfy @no_alloc, @no_panic constraints; cannot have custom parameters or return a value
 }
 ```
 - Interrupt handler functions must have the return type `!` (never return).
-- They are implicitly `@no_alloc` and `@no_panic`.
+- The compiler enforces that interrupt handlers satisfy the constraints of `@no_alloc` and `@no_panic`; violations are compile-time errors. Redundant explicit `@no_alloc` or `@no_panic` annotations are allowed and produce no warning.
+- Interrupt handlers cannot have custom parameters.
 - The compiler automatically generates the interrupt vector table from all `@interrupt` annotations, respecting platform ABI and optional `@layout` attributes.
 
 ### Task Isolation
@@ -1336,7 +1351,7 @@ A: No. The `if` expression already serves this purpose, and `?` is reserved for 
 A: `!` marks calls to `comptime` functions, making compile‑time evaluation explicit at the call site. This is consistent with `?` for error propagation and `await` for asynchronous suspension.
 
 **Q: Can `@trusted` functions call each other?**
-A: Yes. The entire trust chain is tracked by `capsa audit`. Additional checks (e.g., `@link_proof`, `@comptime_test`) may be required in strict mode to justify the trust.
+A: Yes. The entire trust chain is tracked by `capsa audit`. In strict mode, every `@trusted` function must have either `@link_proof` or `@comptime_test`; otherwise compilation fails.
 
 **Q: How are specification and requirements traced?**
 A: Documentation comments with `@spec`, `@requirement`, `@rationale`, and `@trace` link code directly to system requirements. The `capsa spec` command generates a traceability matrix suitable for certification.
@@ -1438,13 +1453,31 @@ A: SMT solvers have limited string theory capabilities, making automatic proof u
 A: MMIO reads and writes are implicitly `@io(read)` and `@io(write)`, respectively. The compiler ensures they are only used in appropriate effect contexts.
 
 **Q: How are interrupt handlers constrained?**
-A: Interrupt handlers must have the return type `!`, are implicitly `@no_alloc` and `@no_panic`, and cannot have custom parameters. The compiler enforces these rules and generates the interrupt vector table from `@interrupt` annotations.
+A: The compiler enforces that interrupt handlers satisfy the constraints of `@no_alloc` and `@no_panic`, and have the return type `!`. They cannot have custom parameters. The compiler generates the interrupt vector table from `@interrupt` annotations.
 
 **Q: Why does Posita have `!` but no `unit` type?**
-A: Posita reuses the empty tuple `()` as its unit type. `()` is a regular value that can be constructed and passed around, satisfying generic placeholders. The `!` type is reserved for the true absence of a value—it is uninhabited and signals that a computation never completes normally. This separation keeps the type system orthogonal (no special `unit` keyword) while making the semantics of “no value” explicit.
+A: Posita reuses the empty tuple `()` as its unit type. `()` is a regular value that can be constructed and passed around, satisfying generic placeholders. The `!` type is reserved for the true absence of a value—it is uninhabited and signals that a computation never completes normally. This separation keeps the type system orthogonal (no special `unit` keyword) while making the semantics of "no value" explicit.
 
 **Q: Why does Posita have `leave with` when `return Err(...)` already works?**
 A: `leave with` provides a dedicated syntactic marker for error exits, making failure paths immediately visible to reviewers without requiring them to mentally categorize every `return` statement. In safety‑critical code audits, this visual distinction is valuable. While `return Err(e)` remains legal in the current version, `leave with` is the preferred style, and future strict mode versions will require it for all error exits from `Result`‑returning functions. The `leave` keyword positions this construct in the same family as `leave` (loop exit) and `finally` / `scope_cleanup` (structured cleanup), reinforcing Posita's commitment to structured control flow.
 
 **Q: How does `@ieee_contracts` differ from the old `ensures with ieee_precision` syntax?**
-A: The old syntax (`ensures with ieee_precision`) appeared at the contract level and read like a single postcondition, creating ambiguity about whether it was a clause or a global modifier. The new `@ieee_contracts` attribute is a function‑level annotation that unambiguously switches all `requires` and `ensures` on that function to IEEE 754 semantics. It also cleanly separates semantics control from contract content, and the attribute form makes it visually consistent with other function modifiers like `@pure` and `@no_panic`. It does not affect the contract semantics of callees, keeping the scope clear.
+A: The old syntax appeared at the contract level and read like a single postcondition, creating ambiguity about whether it was a clause or a global modifier. The new `@ieee_contracts` attribute is a function‑level annotation that unambiguously switches all `requires` and `ensures` on that function to IEEE 754 semantics. It also cleanly separates semantics control from contract content, and the attribute form makes it visually consistent with other function modifiers like `@pure` and `@no_panic`. It does not affect the contract semantics of callees, keeping the scope clear.
+
+**Q: What is the relationship between `@no_alloc` and `@no_alloc_error`?**
+A: `@no_alloc` implies `@no_alloc_error`; a function that never allocates trivially satisfies the no-allocation-on-error constraint. Redundant declaration of both is allowed but not required.
+
+**Q: Can `@no_alloc_error` and `@alloc` be used together?**
+A: Yes. This combination means normal execution paths may perform dynamic allocation, but error paths (including all `From` conversions reachable via `?`) must not allocate.
+
+**Q: What happens when `@no_panic` verification fails?**
+A: In strict mode, it is a compile-time error. In non-strict mode, the compiler emits a warning and may instrument unproven checks with a runtime panic guard.
+
+**Q: Are `@link_proof` and `@comptime_test` required for all `@trusted` functions?**
+A: In strict mode, every `@trusted` function must have either `@link_proof` (referencing an external formal proof) or at least one `@comptime_test` exercising its safety contract. If neither is present, compilation fails.
+
+**Q: How are ambiguous variant names in `@must_handle` resolved?**
+A: Variant names are resolved against the error type `E` of the function's `Result<_, E>` return type. If a variant name is ambiguous in the current scope, the compiler emits an error and requires explicit qualification using `EnumName::Variant`.
+
+**Q: Does `@interrupt` implicitly add `@no_alloc` and `@no_panic`?**
+A: No. The compiler enforces that interrupt handlers satisfy these constraints; it does not inject attributes. Redundant explicit `@no_alloc` or `@no_panic` annotations on an `@interrupt` function are allowed and produce no warning.
