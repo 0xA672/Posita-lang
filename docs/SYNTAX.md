@@ -1,5 +1,5 @@
 # Posita Language Syntax
-**Document revision: 2026-06-20** (working draft, not a frozen specification)
+**Document revision: 2026-06-21** (working draft, not a frozen specification)
 
 > [!NOTE]
 > This document version tracks its own edits. It does **not** correspond to a language specification release.
@@ -21,7 +21,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
 `catch`, `panic`, `unsafe`, `let`, `finally`,
-`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`, `no_alloc_error`, `no_panic`, `debug_info`, `old`, `audit_log`, `interrupt`, `ieee_contracts`
+`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`, `no_alloc_error`, `no_panic`, `debug_info`, `old`, `audit_log`, `interrupt`, `ieee_contracts`, `diverges`
 
 `Int`, `UInt`, `Ptr`, `Str`, `String`, `Result`, `Option`, `usize`, `Float` are built-in type constructors, not reserved words.  
 `linear`, `consume` are planned keywords; `by` is reserved for future use.
@@ -345,6 +345,7 @@ The following attributes are not layout‑specific but affect language semantics
 | `@audit_log` | Function | Marks a function whose runtime contract violations must be written to an immutable audit log. The storage backend is defined by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended. |
 | `@interrupt(irq, priority?)` | Function | Marks an interrupt handler. The compiler enforces that the function satisfies the constraints of `@no_alloc`, `@no_panic`, and return type `!`; violations are compile-time errors. Redundant explicit `@no_alloc` or `@no_panic` annotations are allowed and produce no warning. See "Interrupts" for full constraints. |
 | `@ieee_contracts` | Function | Interprets all floating‑point `requires` and `ensures` clauses on this function under IEEE 754 semantics instead of the default mathematical real domain. This attribute is not inherited by callees. |
+| `@diverges` | Function | Declares that this function never returns normally. The function's return type may be any `T` (not just `!`), but all reachable paths in the body must diverge (e.g., `loop {}`, hardware halt). The compiler verifies divergence in strict mode. `@diverges` is incompatible with `panic` in the function body (divergence must be deterministic). Compatible with `@no_panic` (non‑panic divergence) and `@trusted`. Not compatible with `@runtime_check`. |
 
 **Implicit relationships among attributes**:
 
@@ -353,7 +354,7 @@ The following attributes are not layout‑specific but affect language semantics
 
 **Attribute compatibility and precedence**: When multiple attributes are combined, the compiler follows a strict ordering:
 1. `@cfg` is evaluated first (determines existence of the item).
-2. Effect annotations (`@pure`, `@io`, `@alloc`, `@no_alloc`, `@no_alloc_error`, `@no_panic`) are checked for consistency.
+2. Effect annotations (`@pure`, `@io`, `@alloc`, `@no_alloc`, `@no_alloc_error`, `@no_panic`, `@diverges`) are checked for consistency.
 3. Contract‑related attributes (`@trusted`, `@runtime_check`, `@link_proof`, `@lemma`, `@ieee_contracts`) are processed.
 4. Code‑generation attributes (`@inline`, `@noinline`, `@tailrec`) are applied last.
 
@@ -365,11 +366,15 @@ Incompatible combinations rejected at compile time:
 - `@no_panic` + `@runtime_check`
 - `@interrupt` + `@alloc`
 - `@interrupt` + `@io`
+- `@diverges` + `@runtime_check` (divergent functions do not return, runtime contract checks are meaningless)
+- `@diverges` with a function body containing a reachable `panic` call
 
 Compatible combinations explicitly confirmed:
 - `@runtime_check` + `@ieee_contracts` (runtime checks use IEEE 754 semantics)
 - `@pure` + `@ieee_contracts` (only changes contract interpretation domain, not side effects)
 - `@no_alloc_error` + `@alloc` (normal paths may allocate, error paths must not)
+- `@diverges` + `@no_panic` (non‑panic divergence such as infinite loops or hardware halts)
+- `@diverges` + `@trusted` (divergence may depend on external guarantees)
 
 ### Type Attributes
 Access compile‑time properties using `'`:
@@ -447,6 +452,7 @@ Functions may be annotated with fine‑grained effect markers to describe their 
 - **`@no_alloc`**: The function guarantees no dynamic allocation. This implies `@no_alloc_error`.
 - **`@no_alloc_error`**: The function guarantees no allocation on any error path. All `From` conversions reachable via `?` in error paths must also be `@no_alloc`. May coexist with `@alloc`.
 - **`@no_panic`**: The function never panics. The compiler statically verifies the absence of overflow traps, bounds‑check failures, or calls to non‑`@no_panic` functions. Verification failure is a compile-time error in strict mode; in non-strict mode, the compiler emits a warning and may instrument unproven checks with a runtime panic guard. Callers are not required to be `@no_panic` themselves; the guarantee is internal to the function body.
+- **`@diverges`**: The function never returns normally. The return type may be any `T`, but all reachable paths must diverge deterministically (e.g., `loop {}`, hardware halt). Functions marked `@diverges` must not contain reachable `panic` calls. Compatible with `@no_panic` (non‑panic divergence) and `@trusted`.
 - **`@trusted`**: The function contains `unsafe` operations and establishes a trust boundary; it must carry `requires`/`ensures` contracts.
 - **`@audit_log`**: The function must write any runtime contract violation to an immutable audit log. The log storage backend is provided by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended.
 - **`@ieee_contracts`**: Interprets all floating‑point contracts (both `requires` and `ensures`) on this function under IEEE 754 semantics rather than the mathematical real domain. This attribute is scoped to the annotated function only and does not affect the contract semantics of any callees.
@@ -825,7 +831,7 @@ x = x + 1;
 - Struct destructuring: `let Point { x, y } = point_expr;`
 - Enum variant destructuring with mandatory `else`:
   ```posita
-  let Some(value) = opt_expr else { return Err(Error::None); };
+  let Some(value) = opt_expr else { leave with Error::None; };
   ```
   The `else` block must diverge (via `return`, `leave with`, `panic`, etc.).
 
@@ -854,14 +860,6 @@ def function_name(param1: Type1, param2: Type2) -> ReturnType { ... }
 Default parameter values: `def f(x: Int<32> = 0) { ... }`
 
 ### Pattern Matching
-> **Pattern refutability** : `set` does not support pattern destructuring;
-it binds a simple identifier only. `let` is Posita's sole pattern
-destructuring construct. When the pattern is irrefutable (e.g. tuples,
-structs), `let` behaves like an immutable binding. When the pattern is
-refutable (e.g. enum variants), `let` requires an `else` block to handle
-the non‑matching case. `if let` and `while let` accept both refutable and
-irrefutable patterns, but the compiler warns when an irrefutable pattern
-is used (since the conditional is unnecessary).
 ```posita
 match value {
     pattern1 | pattern2 if guard_condition => expression1,
@@ -941,7 +939,7 @@ After a move, the source variable is invalidated and any subsequent use is a com
 2.  **`?`** — the propagation operator, providing concise, zero‑cost forwarding of errors with full type visibility.
 3.  **`catch` / `leave with`** — structured control flow for local error handling, conversion, and exit.
 
-The `leave with` construct provides a dedicated syntax for structured early exit from a function with an error payload. It is the **preferred** error exit path in all contexts where a `Result` is returned. The compiler accepts the error value directly (`leave with ErrorVariant`) and automatically wraps it in `Err(...)`. While `return Err(e)` remains legal in v0.1, future strict mode versions will require `leave with` for all error exits from `Result`‑returning functions, and a lint will warn on `return Err(e)` inside `catch` blocks starting in v0.2. This progressive strengthening ensures that error paths carry a distinct visual marker for reviewers from day one, while evolving toward full enforcement.
+The `leave with` construct provides a dedicated syntax for structured early exit from a function with an error payload. It is the **only** valid error exit path in all contexts where a `Result` is returned. The compiler accepts the error value directly (`leave with ErrorVariant`) and automatically wraps it in `Err(...)`. The legacy form `return Err(e)` is a compile‑time error in all editions.
 
 ### The `Result` Type
 `Result<T, E>` is a built‑in enum:
@@ -961,7 +959,7 @@ No type‑erased errors; fully monomorphized, zero overhead.
 When a function is annotated `@no_alloc_error`, the compiler verifies that every `?` propagation path uses only `From` implementations that are themselves `@no_alloc`. If any conversion in the error path could allocate, the `?` operator is rejected. Simple enum‑to‑enum conversions without payload transformations automatically satisfy this requirement.
 
 ### Handling Errors Locally with `catch`
-A `catch` expression has the type `T` where the preceding expression has type `Result<T, E>`. Each branch of `catch` must either diverge (via `leave with`, `return`, `panic`, etc.) or produce a value of type `T`. The patterns in `catch` branches are the enum variant names directly (e.g., `|IoError| { ... }`), not qualified paths, because the error type is already known from the expression.
+A `catch` expression has the type `T` where the preceding expression has type `Result<T, E>`. Each branch of `catch` must either diverge (via `leave with`, `panic`, etc.) or produce a value of type `T`. The patterns in `catch` branches are the enum variant names directly (e.g., `|IoError| { ... }`), not qualified paths, because the error type is already known from the expression.
 
 Example with divergence:
 ```posita
@@ -993,26 +991,18 @@ This non‑exhaustive design works together with `@must_handle`: a library autho
 **When to use `match` instead**: If you need to exhaustively handle every error variant (e.g., in a top‑level error handler that must not let any error escape), use `match`. `catch` is designed for selective interception with implicit propagation of the rest, while `match` provides exhaustive case analysis.
 
 ### Early Return with `leave with`
-`leave with` is a structured, non‑local exit that returns an error from the current function. It is the preferred mechanism for error exits in all `Result`‑returning functions.
+`leave with` is a structured, non‑local exit that returns an error from the current function. It is the only error exit mechanism for `Result`‑returning functions.
 
 The compiler accepts the error value directly:
 ```posita
 def example() -> Result<Int<32>, MyError> {
     set x = dangerous_op() catch {
-        |err| leave with err;   // preferred: structured error exit
+        |err| leave with err;
     };
     // ...
 }
 ```
-The error value after `leave with` must be of type `E` where the enclosing function returns `Result<_, E>`. The compiler automatically wraps it in `Err(...)`. If the programmer writes `leave with Err(e)` explicitly, the compiler unwraps the redundant constructor and treats it identically to `leave with e`.
-
-This constraint ensures that `leave with` can only be used for error propagation, never for successful return.
-
-**Relationship with `return`**: In v0.1, `return Err(e)` is syntactically legal and semantically identical to `leave with e`. However, `leave with` is preferred because it provides a distinct visual marker for error exits, aiding code review in safety‑critical contexts.
-
-**Future evolution**:
-- **v0.2 (planned)**: A lint will flag `return Err(e)` inside `catch` blocks, recommending `leave with` instead.
-- **v0.3 (planned)**: Strict mode will enforce that all error exits from `Result`‑returning functions must use `leave with`, making `return Err(e)` a compile‑time error in those contexts.
+The error value after `leave with` must be of type `E` where the enclosing function returns `Result<_, E>`. The compiler automatically wraps it in `Err(...)`. Using `return Err(e)` in place of `leave with` is a compile‑time error.
 
 ### Explicit Error Paths and `From` Conversions
 `From` implementations allow automatic error conversion via `?`. All conversions are statically known.
@@ -1244,7 +1234,7 @@ def calculate_bonus(salary: Salary, multiplier: PositiveInt) -> Salary
 def process_employee(emp: &mut Employee, bonus_mult: PositiveInt) -> Result<(), AppError>
     requires emp.salary >= 0
 {
-    if emp.age > 100 { return Err(AppError::ValidationError(b"Employee too old\0               ")); }
+    if emp.age > 100 { leave with AppError::ValidationError(b"Employee too old\0               "); }
     safe_puts(b"Processing employee...\0") catch {
         |IoError as e| { log(e); leave with AppError::IoError; }
         |ValidationError => { leave with AppError::IoError; }
@@ -1295,7 +1285,7 @@ def main() -> Result<(), AppError> {
 - **From Rust**: `Result`‑based error handling (without type erasure), `if let`, `match`, trait‑like generics, borrow checker.
 - **From Zig**: The `comptime` mechanism and the philosophy of moving work to compile time are direct inspirations. Posita adds the `!` call marker and integrates `comptime` with SMT‑based contract verification, going beyond what Zig's comptime offers.
 - **From ATS**: The concept of encoding invariants in types and the ambition to eliminate runtime errors through static proofs have influenced Posita. ATS is a secondary inspiration after Ada, Rust, and Zig.
-- **Unique to Posita**: bit‑width parameterized integers with explicit overflow control, orthogonal pointer sizes, type‑level defaults with invariants and `no_default`, `leave`/`leave with`, type capture, fully static error monomorphization, compile‑time type factories, reflection, structured `finally` blocks, systematic UB elimination, optional strict mode, ghost variables, specification tags, named scope cleanup, construction validation, lemma functions, fine‑grained effect annotations, deferred contract checking (`@runtime_check`), layout reflection (`layout_of!`), proof hints (`@hint`), fine‑grained error accountability (`@must_handle`), tiered diagnostics, implicit invariant propagation, `old()` expressions, fixed‑precision rationals, MMIO types, interrupt vector generation, and more.
+- **Unique to Posita**: bit‑width parameterized integers with explicit overflow control, orthogonal pointer sizes, type‑level defaults with invariants and `no_default`, `leave`/`leave with`, type capture, fully static error monomorphization, compile‑time type factories, reflection, structured `finally` blocks, systematic UB elimination, optional strict mode, ghost variables, specification tags, named scope cleanup, construction validation, lemma functions, fine‑grained effect annotations, deferred contract checking (`@runtime_check`), layout reflection (`layout_of!`), proof hints (`@hint`), fine‑grained error accountability (`@must_handle`), tiered diagnostics, implicit invariant propagation, `old()` expressions, fixed‑precision rationals, MMIO types, interrupt vector generation, `@diverges` for deterministic non‑returning functions, and more.
 
 ---
 
@@ -1377,7 +1367,7 @@ A: No. `@trusted` is a declaration‑site attribute on function definitions. Cal
 A: `set` is the general variable declaration, defaulting to immutability but allowing `set mut`. `let` is a restricted, always‑immutable form that additionally supports pattern destructuring (tuples, structs, enum variants with mandatory `else`). `let` always requires an explicit initializer and cannot use a type's default value. Use `set` for general purposes; use `let` when you need destructuring or want to enforce immutability at a glance.
 
 **Q: What are the fine‑grained effect annotations?**
-A: `@pure`, `@io(read)`, `@io(write)`, `@io`, `@alloc`, `@no_alloc`, `@no_alloc_error`, `@no_panic`, `@audit_log`, and `@trusted` describe a function's side effects. The compiler checks these annotations for consistency, giving reviewers a precise summary of what a function can do without reading its body.
+A: `@pure`, `@io(read)`, `@io(write)`, `@io`, `@alloc`, `@no_alloc`, `@no_alloc_error`, `@no_panic`, `@diverges`, `@audit_log`, and `@trusted` describe a function's side effects. The compiler checks these annotations for consistency, giving reviewers a precise summary of what a function can do without reading its body.
 
 **Q: How are slices passed to `extern "C"` functions?**
 A: `&[T]` and `&mut [T]` are automatically converted to `*const T` and `*mut T` at the ABI boundary, with the length component discarded. This is a deterministic, compiler‑enforced rule; the programmer must ensure the data meets the C function's expectations (e.g., null termination).
@@ -1466,8 +1456,8 @@ A: The compiler enforces that interrupt handlers satisfy the constraints of `@no
 **Q: Why does Posita have `!` but no `unit` type?**
 A: Posita reuses the empty tuple `()` as its unit type. `()` is a regular value that can be constructed and passed around, satisfying generic placeholders. The `!` type is reserved for the true absence of a value—it is uninhabited and signals that a computation never completes normally. This separation keeps the type system orthogonal (no special `unit` keyword) while making the semantics of "no value" explicit.
 
-**Q: Why does Posita have `leave with` when `return Err(...)` already works?**
-A: `leave with` provides a dedicated syntactic marker for error exits, making failure paths immediately visible to reviewers without requiring them to mentally categorize every `return` statement. In safety‑critical code audits, this visual distinction is valuable. While `return Err(e)` remains legal in the current version, `leave with` is the preferred style, and future strict mode versions will require it for all error exits from `Result`‑returning functions. The `leave` keyword positions this construct in the same family as `leave` (loop exit) and `finally` / `scope_cleanup` (structured cleanup), reinforcing Posita's commitment to structured control flow.
+**Q: Why does Posita have `leave with` and not allow `return Err(...)`?**
+A: `leave with` is the only valid error exit in Posita. It provides a dedicated syntactic marker for error exits, making failure paths immediately visible to reviewers. Unlike `return Err(e)`, which can be confused with successful returns during code review, `leave with` cannot be mistaken for anything other than an error exit. This aligns with Posita's commitment to explicit, auditable control flow.
 
 **Q: How does `@ieee_contracts` differ from the old `ensures with ieee_precision` syntax?**
 A: The old syntax appeared at the contract level and read like a single postcondition, creating ambiguity about whether it was a clause or a global modifier. The new `@ieee_contracts` attribute is a function‑level annotation that unambiguously switches all `requires` and `ensures` on that function to IEEE 754 semantics. It also cleanly separates semantics control from contract content, and the attribute form makes it visually consistent with other function modifiers like `@pure` and `@no_panic`. It does not affect the contract semantics of callees, keeping the scope clear.
@@ -1489,3 +1479,6 @@ A: Variant names are resolved against the error type `E` of the function's `Resu
 
 **Q: Does `@interrupt` implicitly add `@no_alloc` and `@no_panic`?**
 A: No. The compiler enforces that interrupt handlers satisfy these constraints; it does not inject attributes. Redundant explicit `@no_alloc` or `@no_panic` annotations on an `@interrupt` function are allowed and produce no warning.
+
+**Q: What is `@diverges` and when should I use it?**
+A: `@diverges` marks a function that never returns normally, even though its return type is a concrete `T` (not `!`). This is useful for stub implementations that must match a trait signature, eternal watchdogs, or hardware halt routines. The compiler verifies that all paths in the function body diverge deterministically (e.g., `loop {}`). `@diverges` must not be combined with `panic` (use `@no_panic` for non‑panic divergence). It is incompatible with `@runtime_check`.
