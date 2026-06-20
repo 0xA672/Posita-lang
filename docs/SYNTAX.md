@@ -1,5 +1,5 @@
 # Posita Language Syntax
-**Document revision: 2026-06-19** (working draft, not a frozen specification)
+**Document revision: 2026-06-20** (working draft, not a frozen specification)
 
 > [!NOTE]
 > This document version tracks its own edits. It does **not** correspond to a language specification release.
