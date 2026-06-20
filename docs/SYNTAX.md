@@ -1006,7 +1006,7 @@ def fetch() -> Result<Data, Error> { ... }
 // Caller that ignores NetworkError or ParseError will get a compiler warning
 let data = fetch() catch {
     |NetworkError as e| { log(e); cached_default }  // handled
-    |ParseError => { return Err(...) }               // handled
+    |ParseError => { leave with ... }                // handled
     // other errors can still fall through
 };
 ```
