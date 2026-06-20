@@ -376,9 +376,11 @@ comptime {
 - `set a = 42;` infers `a` as `Int<32>` (default integer width).
 - **Type capture**:
   ```posita
-  set auto[<T>..] = expression;
+  set auto<T> = expression;          // capture type only
+  set auto<T, N> = expression;       // capture type and compile-time constant
+  set auto<T, N, L> = expression;    // multiple captures (types and/or constants)
   ```
-  Binds the type of `expression` to the compile‑time name `T`, making it available for reflection, assertion, or type factory usage in subsequent `comptime` blocks. The `..` is a placeholder for future extensions such as variadic type lists. For a concrete usage example, see `make_employee_report` in the Complete Example section.
+  Binds the compile‑time entities (types or compile‑time constant values) of `expression` to the names inside the angle brackets, making them available for reflection, assertion, or type factory usage in subsequent `comptime` blocks. Capture names are immutable and scoped to the enclosing block. The comma‑separated list follows the same syntax as generic type parameters. For a concrete usage example, see `make_employee_report` in the Complete Example section.
 
 ### Ghost Variables
 Ghost variables are declared with the `ghost` keyword and exist only at compile time. They participate in contracts and invariants but are completely erased from runtime code. Their scope follows normal block scoping; they cannot affect runtime control flow (e.g., `if ghost_var` is illegal outside contracts).
@@ -943,7 +945,7 @@ Example with divergence:
 def process() -> Result<(), ProcessError> {
     set data = fetch() catch {
         |NetworkError as e| { log(e); leave with ProcessError::NetworkFail; }
-        |ParseError => { return Err(ProcessError::BadData); }
+        |ParseError => { leave with ProcessError::BadData; }
     };
     return Ok(());
 }
@@ -964,6 +966,8 @@ def fetch_or_default() -> Data {
 **Non‑exhaustiveness**: Unlike `match`, `catch` does **not** require exhaustiveness. Any error variant that is not explicitly matched is **implicitly propagated**—equivalent to `leave with Err(unmatched_variant)`. This is the fundamental difference between `catch` and `match`: `catch` says "handle these specific errors here, let everything else pass through"; `match` says "handle all possibilities here and now."
 
 This non‑exhaustive design works together with `@must_handle`: a library author can mark specific error variants as `@must_handle`, forcing callers to write a `catch` branch for those variants even if they use a wildcard for the rest.
+
+**When to use `match` instead**: If you need to exhaustively handle every error variant (e.g., in a top‑level error handler that must not let any error escape), use `match`. `catch` is designed for selective interception with implicit propagation of the rest, while `match` provides exhaustive case analysis.
 
 ### Early Return with `leave with`
 `leave with` is a structured, non‑local exit that returns an error from the current function. It is the preferred mechanism for error exits in all `Result`‑returning functions.
@@ -1220,14 +1224,14 @@ def process_employee(emp: &mut Employee, bonus_mult: PositiveInt) -> Result<(), 
     if emp.age > 100 { return Err(AppError::ValidationError(b"Employee too old\0               ")); }
     safe_puts(b"Processing employee...\0") catch {
         |IoError as e| { log(e); leave with AppError::IoError; }
-        |ValidationError => { return Err(AppError::IoError); }
+        |ValidationError => { leave with AppError::IoError; }
     };
     emp.salary = calculate_bonus(emp.salary, bonus_mult);
     return Ok(());
 } finally { }
 
 def make_employee_report(emp: &Employee) -> &[Byte] {
-    set auto[<BonusType>..] = calculate_bonus(emp.salary, 1);
+    set auto<BonusType> = calculate_bonus(emp.salary, 1);
     comptime {
         set info = @typeInfo!(BonusType);
         match info {
@@ -1380,7 +1384,7 @@ A: `move` explicitly transfers ownership of a non‑`Copy` value in assignments,
 A: No. All `extern "C"` functions are inherently unsafe and can only be called inside `unsafe` blocks or `@trusted` functions. This ensures all FFI calls are auditable.
 
 **Q: How should `catch` patterns be written?**
-A: `catch` branches use the enum variant names directly (e.g., `|IoError| { ... }`), without qualifying them with the enum type. The error type is already known from the expression being caught. The `as` keyword can bind the error value to a local variable. For branches consisting of a single expression, the arrow shorthand `=>` can replace curly braces: `|ParseError => return Err(...)`.
+A: `catch` branches use the enum variant names directly (e.g., `|IoError| { ... }`), without qualifying them with the enum type. The error type is already known from the expression being caught. The `as` keyword can bind the error value to a local variable. For branches consisting of a single expression, the arrow shorthand `=>` can replace curly braces: `|ParseError => leave with ...`.
 
 **Q: How do I enforce that callers handle specific errors?**
 A: Annotate the function with `@must_handle(Variant1, ...)`. The compiler will warn if a caller does not explicitly match or catch those variants. This keeps critical errors visible without forcing exhaustive matching of all variants.
