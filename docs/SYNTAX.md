@@ -315,7 +315,7 @@ The following attributes are not layout‑specific but affect language semantics
 | `@hint(assertion)` | Function, Loop | Provides a hint to the SMT solver to guide proof search. Hints must be accompanied by a meta‑contract that proves the hint itself is valid. |
 | `@exhaustive` | Enum | Requires all `match`, `if let`, and `while let` on the enum to be exhaustive. |
 | `@debug_info` | Function, Module | Controls which symbols are emitted into debug information. Supports minimal exposure for safety‑critical deployments. |
-| `@audit_log` | Function | Marks a function whose runtime contract violations must be written to an immutable audit log. The storage backend is defined by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended. |
+| `@audit_log` | Function | Marks a function whose runtime contract violations must be written to an immutable audit log. The storage backend is provided by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended. |
 | `@interrupt(irq, priority?)` | Function | Marks an interrupt handler; implicitly `@no_alloc`, `@no_panic`, return type `!`. |
 
 **Attribute compatibility and precedence**: When multiple attributes are combined, the compiler follows a strict ordering:
@@ -683,12 +683,13 @@ They are invoked by placing **`@apply_lemma(pow2_induction_hint)`** on the targe
 
 - **Attachment**: A `generate` block must be explicitly attached to a type definition or module using `generate for <TypeOrModule>`.
 - **Declarative generation**: It may contain any module-level declaration, such as `impl` blocks, function definitions, type aliases, or compile-time constants. These declarations are expanded and injected into the enclosing scope at compile time.
-- **Declarative iteration**: `generate` blocks support iterating over compile-time known sequences, such as the fields of a struct obtained via `@typeInfo!(T).fields`. These loops are fully unrolled at compile time and must be side-effect free. They enable per-field code generation (e.g., deriving field-wise serialization or accessors) without sacrificing auditability. The exact iteration syntax and identifier splicing (e.g., `#`-based name construction) are still under design.
+- **Declarative name mapping (no implicit identifier splicing)**: Posita rejects traditional implicit identifier concatenation (e.g., `concat_idents!` or `#`-based splicing) because it undermines static auditability, breaks determinism, and obscures the connection between generated code and its source. Instead, `generate` blocks will adopt a **declarative name mapping** approach. Within a `generate` block, reusable templates can be defined with placeholder slots (e.g., `[field]`). During expansion, the compiler instantiates each template for the appropriate compile-time entities (such as struct fields), mapping the placeholder to a concrete name derived directly from the source. This ensures every generated identifier has a clear, searchable origin in the source template.
+- **Declarative iteration**: `generate` blocks support iterating over compile-time known sequences, such as the fields of a struct obtained via `@typeInfo!(T).fields`. These loops are fully unrolled at compile time and must be side-effect free. They enable per-field code generation without sacrificing auditability.
 - **Pure and deterministic**: `generate` blocks are **side-effect free**. They may use conditionals (`if`) and field-wise iteration based on compile-time constants (e.g., `@typeInfo`), but they cannot call functions with `@io` effects or rely on non-deterministic input. The transformation from type information to generated declarations must be entirely deterministic.
 - **Auditability**: All code generated for a type is visible directly below its definition. Reviewers can understand the full interface of a type without searching the entire codebase for scattered `comptime` blocks that might inject implementations.
 - **Error diagnostics**: Errors inside a `generate` block point to the original source location within the block, preserving the correspondence between the generator and the generated code. Contextual information (e.g., "in expansion of `impl Serialize for MyStruct`") is provided for semantic errors.
 
-Example:
+Example (draft syntax, subject to change):
 ```posita
 type MyStruct = struct {
     x: Int<32>,
@@ -699,19 +700,19 @@ generate for MyStruct {
     if @typeInfo!(MyStruct).fields'len <= 4 {
         impl Copy for MyStruct { }
     }
-    // Generate a getter for each field (syntax under design)
-    for field in @typeInfo!(MyStruct).fields {
-        def get_#field.name(self: &MyStruct) -> field.type {
-            return self.#field.name;
-        }
+
+    // Generate a getter for each field via a name-mapped template
+    def [field] get(self: &MyStruct) -> field.type {
+        return self.[field];
     }
+
     impl Serialize for MyStruct {
         // ...
     }
 }
 ```
 
-> **Note:** This feature is planned for a future release and is not yet implemented. The exact syntax, iteration model, and identifier splicing mechanism are subject to refinement.
+> **Note:** This feature is planned for a future release and is not yet implemented. The exact syntax for name mapping, iteration, and template instantiation remains under design.
 
 ---
 
