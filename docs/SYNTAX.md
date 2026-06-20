@@ -677,6 +677,35 @@ comptime def pow2_induction_hint(n: Int<32>) -> [Assertion; 2] { ... }
 ```
 They are invoked by placing **`@apply_lemma(pow2_induction_hint)`** on the target function's definition, which causes the compiler to inject the returned assertions into the SMT solver's context during verification of that function.
 
+### `generate` Blocks (Planned)
+
+`generate` blocks provide a declarative, auditable mechanism for compile-time code generation. Unlike `comptime` blocks, which are general-purpose computation engines that cannot directly inject top-level declarations, `generate` blocks are specifically designed to produce module-level declarations (`impl`, `def`, `type`, `const`) in a controlled and reviewable way.
+
+- **Attachment**: A `generate` block must be explicitly attached to a type definition or module using `generate for <TypeOrModule>`.
+- **Declarative generation**: It may contain any module-level declaration, such as `impl` blocks, function definitions, type aliases, or compile-time constants. These declarations are expanded and injected into the enclosing scope at compile time.
+- **Pure and deterministic**: `generate` blocks are **side-effect free**. They may use conditionals (`if`) based on compile-time constants (e.g., `@typeInfo`), but they cannot call functions with `@io` effects or rely on non-deterministic input. The transformation from type information to generated declarations must be entirely deterministic.
+- **Auditability**: All code generated for a type is visible directly below its definition. Reviewers can understand the full interface of a type without searching the entire codebase for scattered `comptime` blocks that might inject implementations.
+- **Error diagnostics**: Errors inside a `generate` block point to the original source location within the block, preserving the correspondence between the generator and the generated code. Contextual information (e.g., "in expansion of `impl Serialize for MyStruct`") is provided for semantic errors.
+
+Example:
+```posita
+type MyStruct = struct {
+    x: Int<32>,
+    y: Int<32>,
+}
+
+generate for MyStruct {
+    if @typeInfo!(MyStruct).fields'len <= 4 {
+        impl Copy for MyStruct { }
+    }
+    impl Serialize for MyStruct {
+        // ...
+    }
+}
+```
+
+> **Note:** This feature is planned for a future release and is not yet implemented. The exact syntax and expansion model are subject to refinement.
+
 ---
 
 ## Statements and Expressions
