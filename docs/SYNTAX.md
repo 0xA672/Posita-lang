@@ -849,6 +849,13 @@ After a move, the source variable is invalidated and any subsequent use is a com
 
 ## Error Handling
 
+**Error handling philosophy**: Posita's error handling rests on three pillars designed to make every failure path explicit and auditable:
+1.  **`Result<T, E>`** — the only carrier of recoverable errors, providing type‑level separation of success and failure.
+2.  **`?`** — the propagation operator, providing concise, zero‑cost forwarding of errors with full type visibility.
+3.  **`catch` / `leave with`** — structured control flow for local error handling, conversion, and exit.
+
+The `leave with` construct provides a dedicated syntax for structured early exit from a function with an error payload. It is the **preferred** error exit path in all contexts where a `Result` is returned. While `return Err(e)` remains legal in v0.1, future strict mode versions will require `leave with` for all error exits from `Result`‑returning functions, and a lint will warn on `return Err(e)` inside `catch` blocks starting in v0.2. This progressive strengthening ensures that error paths carry a distinct visual marker for reviewers from day one, while evolving toward full enforcement.
+
 ### The `Result` Type
 `Result<T, E>` is a built‑in enum:
 ```posita
@@ -892,8 +899,27 @@ def fetch_or_default() -> Data {
 }
 ```
 
+**Exhaustiveness**: Every `catch` block must handle all possible error variants of the `Result` type being caught. The compiler will reject a `catch` block that does not provide a branch for each variant. This ensures that no error path is silently ignored.
+
 ### Early Return with `leave with`
-`leave with` is a structured, non‑local exit that returns an error from the current function. The expression after `leave with` must be of type `Err(E)` where `E` matches the error type of the enclosing function's `Result`.
+`leave with` is a structured, non‑local exit that returns an error from the current function. It is the preferred mechanism for error exits in all `Result`‑returning functions.
+
+The expression after `leave with` must be of type `Err(E)` where `E` matches the error type of the enclosing function's `Result`. This constraint ensures that `leave with` can only be used for error propagation, never for successful return.
+
+**Relationship with `return`**: In v0.1, `return Err(e)` is syntactically legal and semantically identical to `leave with Err(e)`. However, `leave with` is preferred because it provides a distinct visual marker for error exits, aiding code review in safety‑critical contexts.
+
+**Future evolution**:
+- **v0.2 (planned)**: A lint will flag `return Err(e)` inside `catch` blocks, recommending `leave with` instead.
+- **v0.3 (planned)**: Strict mode will enforce that all error exits from `Result`‑returning functions must use `leave with`, making `return Err(e)` a compile‑time error in those contexts.
+
+```posita
+def example() -> Result<Int<32>, MyError> {
+    set x = dangerous_op() catch {
+        |err| leave with Err(err);   // preferred: structured error exit
+    };
+    // ...
+}
+```
 
 ### Explicit Error Paths and `From` Conversions
 `From` implementations allow automatic error conversion via `?`. All conversions are statically known.
@@ -1345,3 +1371,6 @@ A: Interrupt handlers must have the return type `!`, are implicitly `@no_alloc` 
 
 **Q: Why does Posita have `!` but no `unit` type?**
 A: Posita reuses the empty tuple `()` as its unit type. `()` is a regular value that can be constructed and passed around, satisfying generic placeholders. The `!` type is reserved for the true absence of a value—it is uninhabited and signals that a computation never completes normally. This separation keeps the type system orthogonal (no special `unit` keyword) while making the semantics of “no value” explicit.
+
+**Q: Why does Posita have `leave with` when `return Err(...)` already works?**
+A: `leave with` provides a dedicated syntactic marker for error exits, making failure paths immediately visible to reviewers without requiring them to mentally categorize every `return` statement. In safety‑critical code audits, this visual distinction is valuable. While `return Err(e)` remains legal in the current version, `leave with` is the preferred style, and future strict mode versions will require it for all error exits from `Result`‑returning functions. The `leave` keyword positions this construct in the same family as `leave` (loop exit) and `finally` / `scope_cleanup` (structured cleanup), reinforcing Posita's commitment to structured control flow.
