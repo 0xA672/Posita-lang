@@ -240,6 +240,7 @@ The `exists` keyword introduces a name for the value being constrained. This nam
 ### Composite Types
 - Arrays: `[T; N]` (fixed size), `[T]` (slice, usually behind a reference).
 - Tuples: `(T1, T2, ...)`
+- **Empty Tuple (`()`)**: The empty tuple `()` is both a type and a value. It serves as Posita's unit type—a concrete, constructible value that carries no information. It is used as a generic placeholder when a type parameter must be instantiated but no meaningful value is needed (e.g., `Iterator<Item = ()>`). Unlike the `!` (never) type, `()` is a normal value that can be passed, returned, and stored.
 - Structs:
   ```posita
   type Point = struct {
@@ -720,6 +721,7 @@ x = x + 1;
 - **Loops**: `for item in iterable { ... }`, `while condition { ... }`, `loop { ... }`
 - **Leaving loops**: `leave;` (exits `for`, `while`, or `loop`), `leave 'label;`, `continue;`
 - **Never type** (`!`): The `!` type represents a computation that never returns (e.g., `panic`, infinite loops, or divergent control flow). It can be used as the return type of functions that do not terminate normally, enabling the compiler to perform control‑flow analysis.
+**`!` vs `()`**: The `!` type represents the absence of *any* value and is uninhabited—no expression can produce a value of type `!`. The `()` type is a unit value, representing an *empty* but existing value. Use `!` for functions that never return or whose return value must never be used; use `()` when a generic instantiation requires a concrete, ignorable value. This distinction eliminates the need for a separate `unit` keyword.
 
 ### Functions
 ```posita
@@ -1295,3 +1297,6 @@ A: MMIO reads and writes are implicitly `@io(read)` and `@io(write)`, respective
 
 **Q: How are interrupt handlers constrained?**
 A: Interrupt handlers must have the return type `!`, are implicitly `@no_alloc` and `@no_panic`, and cannot have custom parameters. The compiler enforces these rules and generates the interrupt vector table from `@interrupt` annotations.
+
+**Q: Why does Posita have `!` but no `unit` type?**
+A: Posita reuses the empty tuple `()` as its unit type. `()` is a regular value that can be constructed and passed around, satisfying generic placeholders. The `!` type is reserved for the true absence of a value—it is uninhabited and signals that a computation never completes normally. This separation keeps the type system orthogonal (no special `unit` keyword) while making the semantics of “no value” explicit.
