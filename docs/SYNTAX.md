@@ -680,6 +680,8 @@ They are invoked by placing **`@apply_lemma(pow2_induction_hint)`** on the targe
 
 ## Statements and Expressions
 
+> **Statement termination:** Every statement in Posita must be terminated with a semicolon. There is no implicit semicolon insertion, and the compiler will reject any statement that lacks a terminating `;`. The only exception is the final expression in a block that is used as an expression (e.g., the tail expression of an `if` expression or `match` arm), which may omit the semicolon to denote that its value is yielded to the enclosing expression. Function return values must always be produced via an explicit `return` statement; a trailing expression without a semicolon at the end of a function body does not constitute an implicit return.
+
 ### Variable Declaration
 ```posita
 set identifier : Type = expression;   // full form
