@@ -24,7 +24,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 `where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`, `no_alloc_error`, `no_panic`, `debug_info`, `old`, `audit_log`, `interrupt`
 
 `Int`, `UInt`, `Ptr`, `Str`, `String`, `Result`, `Option`, `usize`, `Float` are built-in type constructors, not reserved words.  
-`linear`, `consume` are planned keywords; `dyn`, `by` are reserved for future use.
+`linear`, `consume` are planned keywords; `by` is reserved for future use.
 
 ### Identifiers
 `[a-zA-Z_][a-zA-Z0-9_]*`
@@ -310,7 +310,7 @@ The following attributes are not layout‑specific but affect language semantics
 | `@no_alloc` | Function | Guarantees no dynamic allocation |
 | `@no_alloc_error` | Function | Guarantees no allocation on error paths, including `From` conversions |
 | `@no_panic` | Function | Guarantees the function never panics; compiler verifies no `trap`, bounds checks, or calls to non‑`@no_panic` functions |
-| `@runtime_check` | Function | Defers contract checking to runtime, even if arguments are compile‑time known. Overrides strict mode locally. |
+| `@runtime_check` | Function | Defers contract checking to runtime, even if arguments are compile‑time known. Only allowed in non‑strict mode. |
 | `@cfg(condition)` | Module, Function | Conditional compilation with `all`, `any`, `not` combinators. The condition may refer to target platform, features, etc. Only paths that compile under the configuration are permitted in strict mode. |
 | `@hint(assertion)` | Function, Loop | Provides a hint to the SMT solver to guide proof search. Hints must be accompanied by a meta‑contract that proves the hint itself is valid. |
 | `@exhaustive` | Enum | Requires all `match`, `if let`, and `while let` on the enum to be exhaustive. |
@@ -324,7 +324,7 @@ The following attributes are not layout‑specific but affect language semantics
 3. Contract‑related attributes (`@trusted`, `@runtime_check`, `@link_proof`, `@lemma`) are processed.
 4. Code‑generation attributes (`@inline`, `@noinline`, `@tailrec`) are applied last.
 
-Incompatible combinations (e.g., `@pure` + `@runtime_check`, `@pure` + `@io`, `@runtime_check` + `@lemma`, `@trusted` + `@runtime_check`) are rejected at compile time.
+Incompatible combinations (e.g., `@pure` + `@runtime_check`, `@pure` + `@io`, `@runtime_check` + `@lemma`, `@trusted` + `@runtime_check`, `@no_panic` + `@runtime_check`) are rejected at compile time.
 
 ### Type Attributes
 Access compile‑time properties using `'`:
@@ -761,7 +761,9 @@ x = x + 1;
   ```posita
   set msg = if x > 5 { b"big" } else { b"small" };
   ```
-- **if let**: `if let Some(val) = opt { ... }`
+- **if let**: `if let Some(val) = opt { ... }`  
+  `if let` tests a single pattern and executes the body if it matches. Unlike `let ... else`, which requires the pattern to succeed and forces a divergent `else` block on failure, `if let` is designed for *optional* destructuring where the non‑matching case simply does nothing (when used as a statement) or falls through to an optional `else` expression.  
+  `if let` may be used as an expression. When used as an expression, an `else` branch is mandatory, and both branches must produce values of the same type. This is consistent with the requirement for `if` expressions. When `if let` is used as a statement, the `else` branch is optional.
 - **while let**: `while let Some(item) = iter.next() { ... }`
 - **Loops**: `for item in iterable { ... }`, `while condition { ... }`, `loop { ... }`
 - **Leaving loops**: `leave;` (exits `for`, `while`, or `loop`), `leave 'label;`, `continue;`
@@ -899,7 +901,9 @@ def fetch_or_default() -> Data {
 }
 ```
 
-**Exhaustiveness**: Every `catch` block must handle all possible error variants of the `Result` type being caught. The compiler will reject a `catch` block that does not provide a branch for each variant. This ensures that no error path is silently ignored.
+**Non‑exhaustiveness**: Unlike `match`, `catch` does **not** require exhaustiveness. Any error variant that is not explicitly matched is **implicitly propagated**—equivalent to `leave with Err(unmatched_variant)`. This is the fundamental difference between `catch` and `match`: `catch` says "handle these specific errors here, let everything else pass through"; `match` says "handle all possibilities here and now."
+
+This non‑exhaustive design works together with `@must_handle`: a library author can mark specific error variants as `@must_handle`, forcing callers to write a `catch` branch for those variants even if they use a wildcard for the rest.
 
 ### Early Return with `leave with`
 `leave with` is a structured, non‑local exit that returns an error from the current function. It is the preferred mechanism for error exits in all `Result`‑returning functions.
@@ -953,6 +957,14 @@ In strict mode, the warning becomes an error.
 - `terminates`: a termination measure. For recursive functions, the argument specified must strictly decrease on each recursive call and have a lower bound, ensuring the recursion always terminates.
 
 Contracts are evaluated in the mathematical integer domain (ideal precision) by default. For floating‑point contracts, `ensures with ieee_precision` switches to IEEE 754 semantics.
+
+#### Contract Qualifiers
+Postconditions (`ensures`) can be specialized to apply only to specific exit paths using qualifiers:
+- **`ensures on Ok(result) => ...`**: The postcondition holds only when the function returns `Ok`. The name `result` is bound to the success value.
+- **`ensures on Err(error) => ...`**: The postcondition holds only when the function returns `Err`. The name `error` is bound to the error value.
+- **`ensures on_timeout => ...`** (async only): Holds when the async operation times out.
+- **`ensures on_cancel => ...`** (async only): Holds when the async operation is cancelled before completion.
+
 ```posita
 def sqrt_approx(x: Float<64>) -> Float<64>
     requires x >= 0.0
@@ -986,16 +998,9 @@ def factorial(n: Int<32>) -> Int<32>
 ```
 
 ### Deferred Contract Checking
-When the `@runtime_check` attribute is applied to a function, its `requires` and `ensures` checks are performed at runtime, even if the arguments are compile‑time constants. This is useful during development or when interfacing with untrusted inputs. In strict mode, the compiler emits a warning for each `@runtime_check` function, noting that the function has not been statically verified.
-```posita
-@runtime_check
-def debug_divide(a: Int<32>, b: Int<32>) -> Int<32>
-    requires b != 0
-    ensures result * b == a
-{
-    return a / b;   // will trap at runtime if b == 0
-}
-```
+When the `@runtime_check` attribute is applied to a function, its `requires` and `ensures` checks are performed at runtime, even if the arguments are compile‑time constants. This is useful during development or when interfacing with untrusted inputs.
+
+In strict mode, `@runtime_check` is treated as an error: all contracts must be statically proven. The `@runtime_check` attribute is only permitted in non‑strict mode, where it serves as an explicit marker that the developer has chosen to defer verification to runtime.
 
 ### Loop Invariants and Termination
 Loops may specify an `invariant` and a `decreases` clause. The `decreases` expression must be a non‑negative integer that strictly decreases on each iteration, providing a proof that the loop always terminates.
@@ -1247,7 +1252,7 @@ A: Ghost variables (`ghost set mut x = ...`) exist only at compile time and are 
 A: Posita requires explicit parsing and validation at the boundary. Once the data is converted into a strongly‑typed struct, all subsequent code enjoys full static guarantees.
 
 **Q: Does Posita support runtime contract checking?**
-A: Yes, the global `--runtime-contracts` flag and the per‑function `@runtime_check` attribute allow deferring contract checks to runtime. This is useful for debugging or when interfacing with untrusted inputs.
+A: Yes, the global `--runtime-contracts` flag and the per‑function `@runtime_check` attribute allow deferring contract checks to runtime. This is useful for debugging or when interfacing with untrusted inputs. In strict mode, `@runtime_check` is not permitted.
 
 **Q: How does Posita interact with WCET analysis?**
 A: Posita generates highly deterministic code and exports detailed metadata (CFG, loop bounds, etc.) via `--emit-timing-info`. Professional WCET tools like aiT consume this metadata to produce precise timing results.
