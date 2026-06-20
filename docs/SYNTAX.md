@@ -854,6 +854,14 @@ def function_name(param1: Type1, param2: Type2) -> ReturnType { ... }
 Default parameter values: `def f(x: Int<32> = 0) { ... }`
 
 ### Pattern Matching
+> **Pattern refutability** : `set` does not support pattern destructuring;
+it binds a simple identifier only. `let` is Posita's sole pattern
+destructuring construct. When the pattern is irrefutable (e.g. tuples,
+structs), `let` behaves like an immutable binding. When the pattern is
+refutable (e.g. enum variants), `let` requires an `else` block to handle
+the non‑matching case. `if let` and `while let` accept both refutable and
+irrefutable patterns, but the compiler warns when an irrefutable pattern
+is used (since the conditional is unnecessary).
 ```posita
 match value {
     pattern1 | pattern2 if guard_condition => expression1,
