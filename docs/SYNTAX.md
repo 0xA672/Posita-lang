@@ -21,7 +21,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
 `catch`, `panic`, `unsafe`, `let`, `finally`,
-`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`, `no_alloc_error`, `no_panic`, `debug_info`, `old`, `audit_log`, `interrupt`
+`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`, `no_alloc_error`, `no_panic`, `debug_info`, `old`, `audit_log`, `interrupt`, `ieee_contracts`
 
 `Int`, `UInt`, `Ptr`, `Str`, `String`, `Result`, `Option`, `usize`, `Float` are built-in type constructors, not reserved words.  
 `linear`, `consume` are planned keywords; `by` is reserved for future use.
@@ -171,6 +171,33 @@ The compiler uses range analysis and type invariants to statically eliminate ove
 - References: `&T` (immutable), `&mut T` (mutable). References are checked at compile time and do not support pointer arithmetic. No null references are allowed; use `Option<&T>` for nullable semantics.
 - **Exclusive borrow**: `&mut T` is an exclusive, non‑copyable borrow. While it is live, the original variable is frozen—neither readable nor writable—preventing data races statically.
 
+#### Pointer Arithmetic
+
+Pointer arithmetic is permitted **only within `unsafe` blocks** and is subject to the following rules. The compiler does not enforce memory safety for pointer arithmetic; it is the programmer's responsibility to ensure that the resulting pointer remains within the bounds of a valid allocation.
+
+**Supported operations**
+
+| Expression | Semantics |
+|---|---|
+| `ptr + offset` | Advances `ptr` by `offset` elements of type `Pointee`. `offset` must be of type `Ptr::size` or implicitly convertible to it. |
+| `ptr - offset` | Reverses `ptr` by `offset` elements. Same type constraint on `offset`. |
+| `ptr1 - ptr2` | Returns the number of `Pointee` elements between `ptr1` and `ptr2`. Both pointers must have the same `pointee` type. Result type is `Ptr::size`. |
+| `ptr[i]` | Equivalent to `*(ptr + i)`. `i` is subject to the same type constraint as `offset`. |
+
+**Prohibited operations**
+
+The following are rejected at compile time:
+- `ptr1 + ptr2`
+- `offset + ptr` (commutativity is not assumed; write `ptr + offset`)
+- `ptr * n`, `ptr / n`, `ptr % n`
+- Any pointer arithmetic involving reference types (`&T`, `&mut T`). References do not support arithmetic; cast to a `Ptr` first.
+
+**Alignment and bounds**
+
+The compiler emits a diagnostic if the result of pointer arithmetic can be statically proven to be misaligned for the `pointee` type. For runtime offsets, the programmer must guarantee alignment via contract or manual assertion; violation results in undefined behavior.
+
+Bounds checking is **never** performed for pointer arithmetic. Use array types (`[T; N]`) or slices (`&[T]`) for safe, bounds-checked indexing.
+
 ### Explicit Lifetime Parameters
 When the compiler cannot infer lifetimes, you may annotate them explicitly:
 ```posita
@@ -317,11 +344,12 @@ The following attributes are not layout‑specific but affect language semantics
 | `@debug_info` | Function, Module | Controls which symbols are emitted into debug information. Supports minimal exposure for safety‑critical deployments. |
 | `@audit_log` | Function | Marks a function whose runtime contract violations must be written to an immutable audit log. The storage backend is defined by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended. |
 | `@interrupt(irq, priority?)` | Function | Marks an interrupt handler; implicitly `@no_alloc`, `@no_panic`, return type `!`. See "Interrupts" for full constraints. |
+| `@ieee_contracts` | Function | Interprets all floating‑point `requires` and `ensures` clauses on this function under IEEE 754 semantics instead of the default mathematical real domain. This attribute is not inherited by callees. |
 
 **Attribute compatibility and precedence**: When multiple attributes are combined, the compiler follows a strict ordering:
 1. `@cfg` is evaluated first (determines existence of the item).
 2. Effect annotations (`@pure`, `@io`, `@alloc`, `@no_alloc`, `@no_alloc_error`, `@no_panic`) are checked for consistency.
-3. Contract‑related attributes (`@trusted`, `@runtime_check`, `@link_proof`, `@lemma`) are processed.
+3. Contract‑related attributes (`@trusted`, `@runtime_check`, `@link_proof`, `@lemma`, `@ieee_contracts`) are processed.
 4. Code‑generation attributes (`@inline`, `@noinline`, `@tailrec`) are applied last.
 
 Incompatible combinations (e.g., `@pure` + `@runtime_check`, `@pure` + `@io`, `@runtime_check` + `@lemma`, `@trusted` + `@runtime_check`, `@no_panic` + `@runtime_check`) are rejected at compile time.
@@ -350,7 +378,7 @@ comptime {
   ```posita
   set auto[<T>..] = expression;
   ```
-  Binds the type of `expression` to the compile‑time name `T`. The `..` is a placeholder for future extensions.
+  Binds the type of `expression` to the compile‑time name `T`, making it available for reflection, assertion, or type factory usage in subsequent `comptime` blocks. The `..` is a placeholder for future extensions such as variadic type lists. For a concrete usage example, see `make_employee_report` in the Complete Example section.
 
 ### Ghost Variables
 Ghost variables are declared with the `ghost` keyword and exist only at compile time. They participate in contracts and invariants but are completely erased from runtime code. Their scope follows normal block scoping; they cannot affect runtime control flow (e.g., `if ghost_var` is illegal outside contracts).
@@ -402,6 +430,7 @@ Functions may be annotated with fine‑grained effect markers to describe their 
 - **`@no_panic`**: The function never panics. The compiler statically verifies the absence of overflow traps, bounds‑check failures, or calls to non‑`@no_panic` functions. Callers are not required to be `@no_panic` themselves; the guarantee is internal to the function body.
 - **`@trusted`**: The function contains `unsafe` operations and establishes a trust boundary; it must carry `requires`/`ensures` contracts.
 - **`@audit_log`**: The function must write any runtime contract violation to an immutable audit log. The log storage backend is provided by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended.
+- **`@ieee_contracts`**: Interprets all floating‑point contracts (both `requires` and `ensures`) on this function under IEEE 754 semantics rather than the mathematical real domain. This attribute is scoped to the annotated function only and does not affect the contract semantics of any callees.
 
 In strict mode the compiler verifies that effect annotations are consistent across call chains. A function calling an `@io(write)` function must itself be annotated at least `@io(write)`.
 
@@ -476,6 +505,33 @@ When `Copy` is automatically derived (or manually implemented), the compiler als
 
 ### Associated Types and Projections
 Associated types are accessed via the `::` operator: `T::Output`. In `where` clauses they are used to constrain relationships between types.
+
+### Operator Desugaring
+
+User-defined operator overloading is achieved by implementing the corresponding built-in trait. The compiler desugars operators according to the following table:
+
+| Expression | Desugars to                     | Trait       |
+|------------|---------------------------------|-------------|
+| `a + b`    | `Add::add(&a, &b)`              | `Add`       |
+| `a - b`    | `Sub::sub(&a, &b)`              | `Sub`       |
+| `a * b`    | `Mul::mul(&a, &b)`              | `Mul`       |
+| `a / b`    | `Div::div(&a, &b)`              | `Div`       |
+| `a % b`    | `Rem::rem(&a, &b)`              | `Rem`       |
+| `-a`       | `Neg::neg(&a)`                  | `Neg`       |
+| `a == b`   | `Eq::eq(&a, &b)`                | `Eq`        |
+| `a != b`   | `not(Eq::eq(&a, &b))`           | `Eq`        |
+| `a < b`    | `Ord::lt(&a, &b)`               | `Ord`       |
+| `a > b`    | `Ord::gt(&a, &b)`               | `Ord`       |
+| `a <= b`   | `Ord::le(&a, &b)`               | `Ord`       |
+| `a >= b`   | `Ord::ge(&a, &b)`               | `Ord`       |
+| `a[i]`     | `Index::index(&a, i)`           | `Index`     |
+| `a[i] = v` | `IndexMut::index_mut(&mut a, i)` | `IndexMut`  |
+
+Overload resolution follows method lookup rules: the compiler searches for an `impl` of the corresponding trait in the current scope and in the defining modules of the operand types. No implicit type coercion is performed to satisfy operator resolution; all operand types must match exactly.
+
+Overflow-suffixed operators (`+%`, `+?`, `+!`) are **not** overloadable; they are compiler intrinsics that apply the overflow policy after the underlying addition.
+
+The error propagation operator `?`, the compile-time call marker `!`, and the `as`/`as!` casts are not part of the trait system; they are compiler-defined operations.
 
 ### Dynamic Dispatch
 When static dispatch is not possible (e.g., heterogeneous collections), the `dyn` keyword creates a trait object: `dyn Trait`. Trait objects use dynamic dispatch via a vtable and may incur a heap allocation. Their use is explicit to ensure reviewers can identify runtime dispatch points.
@@ -602,6 +658,8 @@ In strict mode, all compilation paths must be provably reachable under at least 
 
 Posita does not support procedural macros or any form of syntax‑level code generation outside the `comptime` system. All compile‑time code generation is performed by `comptime` functions, which are type‑checked, sandboxed, and subject to resource limits. This ensures that all code—whether executed at runtime or at compile time—is visible, auditable, and subject to the same safety guarantees.
 
+**Important:** `comptime` blocks and functions operate at the expression and statement level. They can produce values, type aliases, and type metadata, but they **cannot generate top‑level declarations** such as `impl`, `trait`, `def`, or `type` definitions. This is a deliberate design separation: `comptime` handles value‑level compile‑time computation, while declarative code generation (deriving traits, generating functions for types) is the role of `generate` blocks (see below).
+
 **Safety restrictions:** `comptime` code runs in a sandboxed environment. It is **prohibited** from performing any of the following:
 - File system writes
 - Network access
@@ -688,6 +746,8 @@ They are invoked by placing **`@apply_lemma(pow2_induction_hint)`** on the targe
 ### `generate` Blocks (Planned)
 
 `generate` blocks provide a declarative, auditable mechanism for compile-time code generation. Unlike `comptime` blocks, which are general-purpose computation engines that cannot directly inject top-level declarations, `generate` blocks are the **only** mechanism for producing module-level declarations (`impl`, `def`, `type`, `const`) in a controlled and reviewable way.
+
+This feature is planned for v0.2 and has been prioritized in response to community feedback. The `comptime` system deliberately excludes declaration-level generation to maintain a clean separation: `comptime` handles value-level computation, while `generate` handles trait derivation and declaration synthesis.
 
 - **Attachment**: A `generate` block must be explicitly attached to a type definition or module using `generate for <TypeOrModule>`.
 - **Declarative generation**: It may contain any module-level declaration, such as `impl` blocks, function definitions, type aliases, or compile-time constants. These declarations are expanded and injected into the enclosing scope at compile time.
@@ -856,7 +916,7 @@ After a move, the source variable is invalidated and any subsequent use is a com
 2.  **`?`** — the propagation operator, providing concise, zero‑cost forwarding of errors with full type visibility.
 3.  **`catch` / `leave with`** — structured control flow for local error handling, conversion, and exit.
 
-The `leave with` construct provides a dedicated syntax for structured early exit from a function with an error payload. It is the **preferred** error exit path in all contexts where a `Result` is returned. While `return Err(e)` remains legal in v0.1, future strict mode versions will require `leave with` for all error exits from `Result`‑returning functions, and a lint will warn on `return Err(e)` inside `catch` blocks starting in v0.2. This progressive strengthening ensures that error paths carry a distinct visual marker for reviewers from day one, while evolving toward full enforcement.
+The `leave with` construct provides a dedicated syntax for structured early exit from a function with an error payload. It is the **preferred** error exit path in all contexts where a `Result` is returned. The compiler accepts the error value directly (`leave with ErrorVariant`) and automatically wraps it in `Err(...)`. While `return Err(e)` remains legal in v0.1, future strict mode versions will require `leave with` for all error exits from `Result`‑returning functions, and a lint will warn on `return Err(e)` inside `catch` blocks starting in v0.2. This progressive strengthening ensures that error paths carry a distinct visual marker for reviewers from day one, while evolving toward full enforcement.
 
 ### The `Result` Type
 `Result<T, E>` is a built‑in enum:
@@ -882,7 +942,7 @@ Example with divergence:
 ```posita
 def process() -> Result<(), ProcessError> {
     set data = fetch() catch {
-        |NetworkError as e| { log(e); leave with Err(ProcessError::NetworkFail); }
+        |NetworkError as e| { log(e); leave with ProcessError::NetworkFail; }
         |ParseError => { return Err(ProcessError::BadData); }
     };
     return Ok(());
@@ -908,22 +968,24 @@ This non‑exhaustive design works together with `@must_handle`: a library autho
 ### Early Return with `leave with`
 `leave with` is a structured, non‑local exit that returns an error from the current function. It is the preferred mechanism for error exits in all `Result`‑returning functions.
 
-The expression after `leave with` must be of type `Err(E)` where `E` matches the error type of the enclosing function's `Result`. This constraint ensures that `leave with` can only be used for error propagation, never for successful return.
-
-**Relationship with `return`**: In v0.1, `return Err(e)` is syntactically legal and semantically identical to `leave with Err(e)`. However, `leave with` is preferred because it provides a distinct visual marker for error exits, aiding code review in safety‑critical contexts.
-
-**Future evolution**:
-- **v0.2 (planned)**: A lint will flag `return Err(e)` inside `catch` blocks, recommending `leave with` instead.
-- **v0.3 (planned)**: Strict mode will enforce that all error exits from `Result`‑returning functions must use `leave with`, making `return Err(e)` a compile‑time error in those contexts.
-
+The compiler accepts the error value directly:
 ```posita
 def example() -> Result<Int<32>, MyError> {
     set x = dangerous_op() catch {
-        |err| leave with Err(err);   // preferred: structured error exit
+        |err| leave with err;   // preferred: structured error exit
     };
     // ...
 }
 ```
+The error value after `leave with` must be of type `E` where the enclosing function returns `Result<_, E>`. The compiler automatically wraps it in `Err(...)`. If the programmer writes `leave with Err(e)` explicitly, the compiler unwraps the redundant constructor and treats it identically to `leave with e`.
+
+This constraint ensures that `leave with` can only be used for error propagation, never for successful return.
+
+**Relationship with `return`**: In v0.1, `return Err(e)` is syntactically legal and semantically identical to `leave with e`. However, `leave with` is preferred because it provides a distinct visual marker for error exits, aiding code review in safety‑critical contexts.
+
+**Future evolution**:
+- **v0.2 (planned)**: A lint will flag `return Err(e)` inside `catch` blocks, recommending `leave with` instead.
+- **v0.3 (planned)**: Strict mode will enforce that all error exits from `Result`‑returning functions must use `leave with`, making `return Err(e)` a compile‑time error in those contexts.
 
 ### Explicit Error Paths and `From` Conversions
 `From` implementations allow automatic error conversion via `?`. All conversions are statically known.
@@ -956,7 +1018,15 @@ In strict mode, the warning becomes an error.
 - `ensures`: a postcondition. Applies to **all** exit paths unless explicitly qualified with `on Ok(...)` or `on Err(...)`.
 - `terminates`: a termination measure. For recursive functions, the argument specified must strictly decrease on each recursive call and have a lower bound, ensuring the recursion always terminates.
 
-Contracts are evaluated in the mathematical integer domain (ideal precision) by default. For floating‑point contracts, `ensures with ieee_precision` switches to IEEE 754 semantics.
+Contracts are evaluated in the mathematical integer domain (ideal precision) by default. To switch a function to IEEE 754 floating‑point semantics for all its `requires` and `ensures` clauses, annotate it with `@ieee_contracts`. This is a function‑level attribute; it does not affect the contract semantics of any callees.
+
+```posita
+@ieee_contracts
+def sqrt_approx(x: Float<64>) -> Float<64>
+    requires x >= 0.0
+    ensures abs(result * result - x) <= 1e-10
+{ ... }
+```
 
 #### Contract Qualifiers
 Postconditions (`ensures`) can be specialized to apply only to specific exit paths using qualifiers:
@@ -964,14 +1034,6 @@ Postconditions (`ensures`) can be specialized to apply only to specific exit pat
 - **`ensures on Err(error) => ...`**: The postcondition holds only when the function returns `Err`. The name `error` is bound to the error value.
 - **`ensures on_timeout => ...`** (async only): Holds when the async operation times out.
 - **`ensures on_cancel => ...`** (async only): Holds when the async operation is cancelled before completion.
-
-```posita
-def sqrt_approx(x: Float<64>) -> Float<64>
-    requires x >= 0.0
-    ensures abs(result * result - x) <= 1e-10
-    ensures with ieee_precision
-{ ... }
-```
 
 **Asynchronous contracts**: For `async` functions, the postcondition may be further qualified with `ensures on_timeout => ...` and `ensures on_cancel => ...`. The `on_timeout` clause describes what holds when the operation times out (the runtime scheduler is responsible for triggering this path). The `on_cancel` clause describes what holds when the operation is cancelled before completion. The compiler verifies that the function body respects these guarantees along each corresponding control‑flow path.
 
@@ -1157,7 +1219,7 @@ def process_employee(emp: &mut Employee, bonus_mult: PositiveInt) -> Result<(), 
 {
     if emp.age > 100 { return Err(AppError::ValidationError(b"Employee too old\0               ")); }
     safe_puts(b"Processing employee...\0") catch {
-        |IoError as e| { log(e); leave with Err(AppError::IoError); }
+        |IoError as e| { log(e); leave with AppError::IoError; }
         |ValidationError => { return Err(AppError::IoError); }
     };
     emp.salary = calculate_bonus(emp.salary, bonus_mult);
@@ -1379,3 +1441,6 @@ A: Posita reuses the empty tuple `()` as its unit type. `()` is a regular value 
 
 **Q: Why does Posita have `leave with` when `return Err(...)` already works?**
 A: `leave with` provides a dedicated syntactic marker for error exits, making failure paths immediately visible to reviewers without requiring them to mentally categorize every `return` statement. In safety‑critical code audits, this visual distinction is valuable. While `return Err(e)` remains legal in the current version, `leave with` is the preferred style, and future strict mode versions will require it for all error exits from `Result`‑returning functions. The `leave` keyword positions this construct in the same family as `leave` (loop exit) and `finally` / `scope_cleanup` (structured cleanup), reinforcing Posita's commitment to structured control flow.
+
+**Q: How does `@ieee_contracts` differ from the old `ensures with ieee_precision` syntax?**
+A: The old syntax (`ensures with ieee_precision`) appeared at the contract level and read like a single postcondition, creating ambiguity about whether it was a clause or a global modifier. The new `@ieee_contracts` attribute is a function‑level annotation that unambiguously switches all `requires` and `ensures` on that function to IEEE 754 semantics. It also cleanly separates semantics control from contract content, and the attribute form makes it visually consistent with other function modifiers like `@pure` and `@no_panic`. It does not affect the contract semantics of callees, keeping the scope clear.
