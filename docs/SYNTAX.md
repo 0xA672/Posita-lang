@@ -108,9 +108,9 @@ The `capsa spec` command collects all these tags and generates a traceability ma
 **Note on semicolons:** A semicolon after a type definition is optional. It is typically omitted for simple one‑line definitions and may be used for clarity after complex definitions.
 
 ### Value Semantics
-Posita defaults to **copy semantics** for all types that implement the `Copy` trait. A type automatically derives `Copy` if it consists only of integers, floats, other `Copy` types, and does **not** implement `Drop`. This ensures that "copy is a trivial bitwise replication" and eliminates "moved‑from" invalid states. Large types like `Vector<T>` are **not** `Copy` because they manage resources (they implement `Drop`). Explicit `move` semantics are available via the `move` keyword for ownership transfer optimization.
+Posita defaults to **copy semantics** for all types that implement the `Copy` trait. A type automatically derives `Copy` if it consists only of integers, floats, other `Copy` types, and does **not** implement `Drop`. This ensures that "copy is a trivial bitwise replication" and eliminates "moved‑from" invalid states. Size is irrelevant to `Copy` derivation; a large struct of pure data is `Copy`, while a small struct that implements `Drop` is not. Large types like `Vector<T>` are **not** `Copy` because they manage resources (they implement `Drop`). Explicit `move` semantics are available via the `move` keyword for ownership transfer optimization.
 
-To prevent automatic `Copy` derivation for a type that would otherwise qualify, either implement `Drop` (even with an empty body) or use the `@no_copy` attribute:
+To prevent automatic `Copy` derivation for a type that would otherwise qualify, either implement `Drop` (even with an empty body) or use the `@no_copy` attribute. `@no_copy` is syntactic sugar for implementing an empty `Drop` trait; it is preferred for clarity of intent.
 ```posita
 @no_copy
 type LargeStruct = struct { data: [Int<8>; 1024] };
@@ -202,7 +202,7 @@ type OwnedFd = Int<32>
     invariant n >= 0
     with no_default;   // must explicitly initialize
 ```
-Declaring `set fd: OwnedFd;` will then be a compile‑time error.
+Declaring `set fd: OwnedFd;` will then be a compile‑time error. The `with no_default` clause is the only way to forbid implicit initialization; there is no `@no_default` attribute.
 
 ### Construction Validation
 A type may specify a validation function that is automatically called after every explicit construction.
@@ -240,7 +240,7 @@ The `exists` keyword introduces a name for the value being constrained. This nam
 ### Composite Types
 - Arrays: `[T; N]` (fixed size), `[T]` (slice, usually behind a reference).
 - Tuples: `(T1, T2, ...)`
-- **Empty Tuple (`()`)**: The empty tuple `()` is both a type and a value. It serves as Posita's unit type—a concrete, constructible value that carries no information. It is used as a generic placeholder when a type parameter must be instantiated but no meaningful value is needed (e.g., `Iterator<Item = ()>`). Unlike the `!` (never) type, `()` is a normal value that can be passed, returned, and stored.
+- **Empty Tuple (`()`)**: The empty tuple `()` is both a type and a value. It serves as Posita's unit type—a concrete, constructible value that carries no information. It is used as a generic placeholder when a type parameter must be instantiated but no meaningful value is needed (e.g., `Iterator<Item = ()>`). Unlike the `!` (never) type, `()` is a normal value that can be passed, returned, and stored. See also `!` vs `()` in Control Flow.
 - Structs:
   ```posita
   type Point = struct {
@@ -290,7 +290,7 @@ The following attributes are not layout‑specific but affect language semantics
 
 | Attribute | Applies to | Description |
 |-----------|------------|-------------|
-| `@no_copy` | Type | Prevents automatic `Copy` derivation |
+| `@no_copy` | Type | Prevents automatic `Copy` derivation (sugar for an empty `Drop`). |
 | `@deprecated("msg")` | Function, Type | Marks an API as deprecated |
 | `@experimental` | Function, Type | Marks a feature as experimental |
 | `@inline` | Function | Forces inlining at call sites; compile error if not possible |
@@ -315,8 +315,8 @@ The following attributes are not layout‑specific but affect language semantics
 | `@hint(assertion)` | Function, Loop | Provides a hint to the SMT solver to guide proof search. Hints must be accompanied by a meta‑contract that proves the hint itself is valid. |
 | `@exhaustive` | Enum | Requires all `match`, `if let`, and `while let` on the enum to be exhaustive. |
 | `@debug_info` | Function, Module | Controls which symbols are emitted into debug information. Supports minimal exposure for safety‑critical deployments. |
-| `@audit_log` | Function | Marks a function whose runtime contract violations must be written to an immutable audit log. The storage backend is provided by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended. |
-| `@interrupt(irq, priority?)` | Function | Marks an interrupt handler; implicitly `@no_alloc`, `@no_panic`, return type `!`. |
+| `@audit_log` | Function | Marks a function whose runtime contract violations must be written to an immutable audit log. The storage backend is defined by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended. |
+| `@interrupt(irq, priority?)` | Function | Marks an interrupt handler; implicitly `@no_alloc`, `@no_panic`, return type `!`. See "Interrupts" for full constraints. |
 
 **Attribute compatibility and precedence**: When multiple attributes are combined, the compiler follows a strict ordering:
 1. `@cfg` is evaluated first (determines existence of the item).
@@ -354,6 +354,10 @@ comptime {
 
 ### Ghost Variables
 Ghost variables are declared with the `ghost` keyword and exist only at compile time. They participate in contracts and invariants but are completely erased from runtime code. Their scope follows normal block scoping; they cannot affect runtime control flow (e.g., `if ghost_var` is illegal outside contracts).
+
+Ghost variables exist for **compile‑time proof**, not for compile‑time computation. Unlike `comptime` variables, which are temporaries within a `comptime` block and vanish after its execution, ghost variables persist throughout the entire verification of a function. They carry proof‑relevant state that is never materialized at runtime, allowing the SMT solver to reason about invariants that span multiple points in the control flow.
+
+Ghost variables follow the same mutability rules as regular variables. `ghost set mut x = false;` declares a mutable ghost variable that can be reassigned in any statement, but these mutations are erased from the final binary.
 ```posita
 def get_adult_names(users: &[User]) -> Vector<String>
     requires users'len > 0
@@ -613,6 +617,10 @@ Violations are detected at compile time and cause a hard error. This guarantees 
 comptime { /* compile‑time code */ }
 ```
 
+`comptime` blocks are generic compile‑time computation engines. They may contain statements (including loops, conditionals, and calls to `comptime` functions), but **they may not contain item‑level declarations** such as `impl`, `type`, or `def`. This restriction ensures that `comptime` blocks cannot silently inject new bindings into the enclosing scope, preserving the principle that a type's complete behavior is statically known from its definition site.
+
+For declarative code generation that produces module‑level declarations, see `generate` blocks (planned).
+
 ### comptime Functions
 ```posita
 comptime def eval_polynomial(...) -> Int<64> { ... }
@@ -679,7 +687,7 @@ They are invoked by placing **`@apply_lemma(pow2_induction_hint)`** on the targe
 
 ### `generate` Blocks (Planned)
 
-`generate` blocks provide a declarative, auditable mechanism for compile-time code generation. Unlike `comptime` blocks, which are general-purpose computation engines that cannot directly inject top-level declarations, `generate` blocks are specifically designed to produce module-level declarations (`impl`, `def`, `type`, `const`) in a controlled and reviewable way.
+`generate` blocks provide a declarative, auditable mechanism for compile-time code generation. Unlike `comptime` blocks, which are general-purpose computation engines that cannot directly inject top-level declarations, `generate` blocks are the **only** mechanism for producing module-level declarations (`impl`, `def`, `type`, `const`) in a controlled and reviewable way.
 
 - **Attachment**: A `generate` block must be explicitly attached to a type definition or module using `generate for <TypeOrModule>`.
 - **Declarative generation**: It may contain any module-level declaration, such as `impl` blocks, function definitions, type aliases, or compile-time constants. These declarations are expanded and injected into the enclosing scope at compile time.
@@ -733,7 +741,7 @@ x = x + 1;
 ```
 
 ### `let` Bindings
-`let` is a restricted, immutable‑only variant of `set` that additionally supports pattern destructuring. A `let` binding is always immutable; there is no `let mut`. It must always be explicitly initialized and cannot rely on a type's default value.
+`let` is a restricted, immutable‑only variant of `set` that additionally supports pattern destructuring. A `let` binding is always immutable; there is no `let mut`. It must always be explicitly initialized and cannot rely on a type's default value. A `let` binding that specifies a type annotation without an explicit initializer (`let x: Type;`) is a compile‑time error; use `set` instead.
 
 - Simple binding: `let x = expr;` (equivalent to `set x = expr;`)
 - Tuple destructuring: `let (x, y) = tuple_expr;`
@@ -758,7 +766,7 @@ x = x + 1;
 - **Loops**: `for item in iterable { ... }`, `while condition { ... }`, `loop { ... }`
 - **Leaving loops**: `leave;` (exits `for`, `while`, or `loop`), `leave 'label;`, `continue;`
 - **Never type** (`!`): The `!` type represents a computation that never returns (e.g., `panic`, infinite loops, or divergent control flow). It can be used as the return type of functions that do not terminate normally, enabling the compiler to perform control‑flow analysis.
-**`!` vs `()`**: The `!` type represents the absence of *any* value and is uninhabited—no expression can produce a value of type `!`. The `()` type is a unit value, representing an *empty* but existing value. Use `!` for functions that never return or whose return value must never be used; use `()` when a generic instantiation requires a concrete, ignorable value. This distinction eliminates the need for a separate `unit` keyword.
+**`!` vs `()`**: The `!` type represents the absence of *any* value and is uninhabited—no expression can produce a value of type `!`. The `()` type is a unit value, representing an *empty* but existing value. Use `!` for functions that never return or whose return value must never be used; use `()` when a generic instantiation requires a concrete, ignorable value. This distinction eliminates the need for a separate `unit` keyword. See also "Empty Tuple" in Composite Types.
 
 ### Functions
 ```posita
@@ -907,7 +915,7 @@ let data = fetch() catch {
 };
 ```
 In strict mode, the warning becomes an error.  
-**Interaction with `?`**: Propagating an error via `?` does **not** count as handling for the purposes of `@must_handle`. The caller must explicitly match the variant or use `delegate()` to explicitly pass the responsibility upstream.
+**Interaction with `?`**: Propagating an error via `?` does **not** count as handling for the purposes of `@must_handle`. The caller must explicitly match the variant or, on the enclosing function, declare `@delegates_must_handle(NetworkError, ParseError)` to pass the responsibility upstream.
 
 ---
 
