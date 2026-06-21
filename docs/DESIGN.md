@@ -1,7 +1,7 @@
 # Posita Design Document (DESIGN.md)
 
 **Status:** Working draft  
-**Last updated:** 2026-06-19
+**Last updated:** 2026-06-21
 
 This document captures the overarching design philosophy of Posita, records key design decisions, and places the language within the broader programming language landscape. It complements the formal syntax specification (`SYNTAX.md`), the implementation plan (`IMPL.md`), and the project roadmap (`PLAN.md`).
 
@@ -37,14 +37,15 @@ Posita defaults to **copy semantics** for types that implement the `Copy` trait 
 
 ### 3.2 Error Handling: No Exceptions, No Type Erasure
 
-Posita rejects both exceptions and type-erased error interfaces (like `Box<dyn Error>`). Instead, it uses a monomorphic `Result<T, E>` type with:
+Posita rejects both exceptions and type-erased error interfaces (like `Box<dyn Error>`). Instead, it uses a monomorphic `Result<T, E>` type with three core mechanisms:
 
 - `?` for propagation,
-- `catch` for localized pattern matching on errors,
-- `leave with Err(...)` for structured early return,
-- `From` trait implementations for automatic, statically visible error conversion.
+- `catch` for localized pattern matching on errors (selective interception with implicit propagation of unhandled variants),
+- `leave with` for structured early exit carrying an error payload.
 
-This makes every possible error path fully visible in the source code and prevents the silent loss of error type information.
+`leave with` is the **only** valid error-exit construct for functions returning `Result`. The programmer writes the error value directly (e.g., `leave with ProcessError::NetworkFail`), and the compiler semantically wraps it as `Err(...)` during type checking. Crucially, `leave with` is **not** syntax sugar for `return Err(...)`—it retains a distinct identity in the control-flow graph as an `ErrorExit` terminator, enabling precise auditing, contract verification (`ensures on Err`), and separate worst-case timing analysis of error paths.
+
+`From` trait implementations enable automatic, statically visible error conversion, keeping the error type monomorphic and zero-cost.
 
 ### 3.3 Memory Management: Affine Ownership + RAII + Finally
 
@@ -68,6 +69,25 @@ Interrupt handlers are modeled as special, highly constrained tasks that must no
 ### 3.5 The `unsafe` Keyword and `@trusted` Boundary
 
 `unsafe` is a block-level construct for operations the compiler cannot verify (inline assembly, raw pointers, C FFI). All `unsafe` code must be encapsulated in `@trusted` functions with `requires`/`ensures` contracts. The compiler trusts these contracts as axioms. This makes the trust boundary explicit, auditable via `capsa audit`, and, in Strict Mode, entirely forbidden.
+
+### 3.6 `let` as Immutable Equation, Not Mutable Binding
+
+Posita distinguishes between `set` (variable declaration, optionally mutable) and `let` (pattern destructuring, always immutable). `let` introduces an **immutable equation**: the bound names are synonyms for the corresponding parts of the destructured value, not independent mutable storage. This design serves two purposes:
+
+- **Proof simplification**: SMT solvers treat `let` bindings as simple substitutions, avoiding state-space explosion.
+- **Clear ownership**: Mutability is attached to storage locations (`set mut`, `&mut T`), not to destructured aliases. Patterns that require mutation must go through the original mutable binding.
+
+`let` supports both irrefutable and refutable patterns. Refutable patterns (e.g., enum variants) require an `else` block that must diverge, ensuring failure handling is explicitly visible.
+
+### 3.7 `@diverges`: Deterministic Non-Returning Functions
+
+Some functions never return normally—watchdog loops, system halt routines, or stub implementations that must match a trait signature but are unreachable in production. For these, Posita provides the `@diverges` attribute. Unlike a return type of `!` (which changes the function's interface), `@diverges` allows the return type to remain whatever the trait or interface requires, while promising the compiler that control flow never reaches a return point.
+
+`@diverges` is verified in strict mode: the function body must consist of infinite loops, calls to other `@diverges` functions, or hardware halts. `panic` is explicitly forbidden in `@diverges` functions, as it represents a non-deterministic global side effect incompatible with the deterministic divergence guarantee. `@diverges` can coexist with `@no_panic`, describing a function that neither panics nor returns.
+
+### 3.8 `@ieee_contracts`: Floating-Point Precision Semantics
+
+Contracts are interpreted in the mathematical real domain by default, which is ideal for reasoning but may diverge from IEEE 754 floating-point behavior. The `@ieee_contracts` attribute switches a function's `requires` and `ensures` to use IEEE 754 semantics instead. This is a function-level attribute, not a contract-level modifier, keeping semantics control separate from contract content and consistent with other effect annotations like `@pure`.
 
 ## 4. Relationship to Other Languages
 
