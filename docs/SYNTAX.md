@@ -327,7 +327,7 @@ The following attributes are not layout‑specific but affect language semantics
 | `@tailrec` | Function | Verifies that all recursive calls are in tail position and enforces tail‑call optimization; compile error if not possible |
 | `@lemma` | Function (lemma provider) | Marks a `comptime` proof helper that returns assertions for the SMT solver |
 | `@apply_lemma(...)` | Function (verification target) | Applies a lemma (by name) to supply the SMT solver with additional assertions during verification of the annotated function |
-| `@trusted` | Function | Establishes a trust boundary for `unsafe` operations; requires `requires`/`ensures` contracts |
+| `@trusted` | Function | Establishes a trust boundary for operations the compiler cannot fully verify, including `unsafe` blocks, raw pointer manipulation, `extern "C"` calls, and dynamic dispatch via `dyn Trait` (in strict mode). Requires `requires`/`ensures` contracts. |
 | `@link_proof(path, hash)` | Function (`@trusted`) | References an external formal proof (e.g., Coq/ATS script) and records its SHA‑256 hash, supplementing the verification of `@trusted` code. In strict mode, every `@trusted` function must be accompanied by either `@link_proof` or at least one `@comptime_test` exercising its safety contract; otherwise compilation fails. `capsa audit` verifies the proof file exists and matches the hash. |
 | `@pure` | Function | No side effects; result depends only on arguments |
 | `@io(read)` | Function | May perform input operations |
@@ -453,7 +453,7 @@ Functions may be annotated with fine‑grained effect markers to describe their 
 - **`@no_alloc_error`**: The function guarantees no allocation on any error path. All `From` conversions reachable via `?` in error paths must also be `@no_alloc`. May coexist with `@alloc`.
 - **`@no_panic`**: The function never panics. The compiler statically verifies the absence of overflow traps, bounds‑check failures, or calls to non‑`@no_panic` functions. Verification failure is a compile-time error in strict mode; in non-strict mode, the compiler emits a warning and may instrument unproven checks with a runtime panic guard. Callers are not required to be `@no_panic` themselves; the guarantee is internal to the function body.
 - **`@diverges`**: The function never returns normally. The return type may be any `T`, but all reachable paths must diverge deterministically (e.g., `loop {}`, hardware halt). Functions marked `@diverges` must not contain reachable `panic` calls. Compatible with `@no_panic` (non‑panic divergence) and `@trusted`.
-- **`@trusted`**: The function contains `unsafe` operations and establishes a trust boundary; it must carry `requires`/`ensures` contracts.
+- **`@trusted`**: The function contains operations the compiler cannot fully verify (`unsafe` blocks, raw pointer manipulation, `extern "C"` calls, or dynamic dispatch via `dyn Trait` in strict mode) and establishes a trust boundary; it must carry `requires`/`ensures` contracts.
 - **`@audit_log`**: The function must write any runtime contract violation to an immutable audit log. The log storage backend is provided by the standard library; tamper‑evident integrity (e.g., hash chains) is strongly recommended.
 - **`@ieee_contracts`**: Interprets all floating‑point contracts (both `requires` and `ensures`) on this function under IEEE 754 semantics rather than the mathematical real domain. This attribute is scoped to the annotated function only and does not affect the contract semantics of any callees.
 
@@ -468,6 +468,11 @@ In Strict Mode, `unsafe` blocks are completely forbidden, guaranteeing UB‑free
 
 ### `@trusted` Nesting
 `@trusted` functions may call other `@trusted` functions, but the entire call chain is tracked by `capsa audit`. In strict mode, every `@trusted` function must be accompanied by either `@link_proof` referencing an external formal proof, or at least one `@comptime_test` exercising its safety contract. If neither is present, compilation fails. If neither is possible, the dependency must be explicitly marked as `trusted = true` in `posita.toml`, indicating that it has been manually audited.
+
+### Dynamic Dispatch in Strict Mode
+In strict mode, the construction and invocation of `dyn Trait` objects require a `@trusted` context. Because the concrete implementation type is resolved at runtime, the compiler cannot statically verify contracts or perform exhaustive control-flow analysis through the dispatch site. By confining dynamic dispatch to `@trusted` functions, the trust boundary is made explicit, and the programmer must provide `requires`/`ensures` contracts that cover all possible implementations.
+
+Outside of `@trusted` code, `dyn Trait` is rejected in strict mode. In non‑strict mode, dynamic dispatch is permitted but flagged during audit for mandatory review.
 
 ### `extern "C"` ABI Rules
 All `extern "C"` function declarations are **inherently unsafe** and can only be called inside `unsafe` blocks or `@trusted` functions. When a reference type (`&T`, `&[T]`, `&mut T`, `&mut [T]`) appears in the signature of an `extern "C"` function, the compiler automatically converts it to the corresponding raw C pointer for the call:
@@ -557,9 +562,12 @@ The error propagation operator `?`, the compile-time call marker `!`, and the `a
 
 ### Dynamic Dispatch
 When static dispatch is not possible (e.g., heterogeneous collections), the `dyn` keyword creates a trait object: `dyn Trait`. Trait objects use dynamic dispatch via a vtable and may incur a heap allocation. Their use is explicit to ensure reviewers can identify runtime dispatch points.
+
 ```posita
 let handlers: [dyn Fn(Int<32>) -> Int<32>; 10];
 ```
+
+**Restrictions in strict mode**: In strict mode, constructing or calling through a `dyn Trait` object is only allowed inside `@trusted` functions, because the compiler cannot statically determine the concrete implementation and therefore cannot perform contract verification or exhaustive control-flow analysis across the dispatch boundary. See the Safety Guarantees section for details.
 
 ### Built‑in Traits
 The following traits are defined by the language and automatically implemented for applicable types:
@@ -1034,6 +1042,18 @@ let data = fetch() catch {
 In strict mode, the warning becomes an error.  
 **Interaction with `?`**: Propagating an error via `?` does **not** count as handling for the purposes of `@must_handle`. The caller must explicitly match the variant or, on the enclosing function, declare `@delegates_must_handle(NetworkError, ParseError)` to pass the responsibility upstream.
 
+### Static Error Tracking: May-Be and Must-Be Analysis
+
+Posita employs two complementary static analyses to enforce accountability for every error path.
+
+**May-Be Analysis (over‑approximation)**: Determines which error variants *may* reach a given program point. This is used to check that every function signature accurately declares all errors it can propagate. If a `catch` block does not intercept a particular variant, may-be analysis ensures that variant appears in the enclosing function's return type. Failure to include it is a compile-time error.
+
+**Must-Be Analysis (under‑approximation)**: Determines which error variants *must* occur at a specific call site—i.e., when all possible execution paths lead to that error and no successful return is possible. Must-be analysis is more precise and is employed in strict mode together with `@must_handle`. If the compiler can prove that a particular error variant is unavoidable at a call site, and that variant is marked `@must_handle`, the caller is forced to handle it locally rather than propagate it further. This prevents the indefinite deferral of critical error handling.
+
+Together, these analyses implement a chain of responsibility:
+- May-be ensures errors are never silently dropped from the type signature.
+- Must-be, when combined with `@must_handle`, forces certain errors to be resolved near their origin, upholding the principle that truly critical failures must not be endlessly propagated.
+
 ---
 
 ## Contracts and Constraints
@@ -1411,7 +1431,7 @@ A: `catch` branches use the enum variant names directly (e.g., `|IoError| { ... 
 A: Annotate the function with `@must_handle(Variant1, ...)`. The compiler will warn if a caller does not explicitly match or catch those variants. This keeps critical errors visible without forcing exhaustive matching of all variants.
 
 **Q: What is dynamic dispatch and how do I use it?**
-A: Dynamic dispatch is available via `dyn Trait` objects, which use a vtable for method calls. Use them explicitly when static dispatch is not possible, such as storing heterogeneous types in a collection. This makes runtime dispatch visible to reviewers.
+A: Dynamic dispatch is available via `dyn Trait` objects, which use a vtable for method calls. Use them explicitly when static dispatch is not possible, such as storing heterogeneous types in a collection. In strict mode, constructing or calling through `dyn Trait` requires a `@trusted` context, because the compiler cannot statically verify the target implementation. This makes runtime dispatch visible to reviewers and ensures it is covered by explicit contracts.
 
 **Q: How do `decreases` and `terminates` work?**
 A: `decreases expr` on a loop guarantees termination by requiring `expr` to be a non‑negative integer that strictly decreases each iteration. `terminates arg` on a recursive function requires the specified argument to strictly decrease on each recursive call with a lower bound. Both are used by the compiler to prove termination, which is essential for safety‑critical systems and WCET analysis.
