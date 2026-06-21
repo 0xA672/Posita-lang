@@ -947,7 +947,7 @@ After a move, the source variable is invalidated and any subsequent use is a com
 2.  **`?`** — the propagation operator, providing concise, zero‑cost forwarding of errors with full type visibility.
 3.  **`catch` / `leave with`** — structured control flow for local error handling, conversion, and exit.
 
-The `leave with` construct provides a dedicated syntax for structured early exit from a function with an error payload. It is the **only** valid error exit path in all contexts where a `Result` is returned. The compiler accepts the error value directly (`leave with ErrorVariant`) and automatically wraps it in `Err(...)`. The legacy form `return Err(e)` is a compile‑time error in all editions.
+The compiler accepts the error value directly (`leave with ErrorVariant`). The `Err(...)` wrapping is a semantic operation performed during type checking—the error value is type-checked against the function's error type `E` and recorded as an `ErrorExit` in the control-flow graph. This is not a syntactic rewrite into `return Err(...)`; `leave with` retains its distinct identity throughout compilation for audit, contract verification, and control-flow analysis.
 
 ### The `Result` Type
 `Result<T, E>` is a built‑in enum:
@@ -1490,3 +1490,6 @@ A: No. The compiler enforces that interrupt handlers satisfy these constraints; 
 
 **Q: What is `@diverges` and when should I use it?**
 A: `@diverges` marks a function that never returns normally, even though its return type is a concrete `T` (not `!`). This is useful for stub implementations that must match a trait signature, eternal watchdogs, or hardware halt routines. The compiler verifies that all paths in the function body diverge deterministically (e.g., `loop {}`). `@diverges` must not be combined with `panic` (use `@no_panic` for non‑panic divergence). It is incompatible with `@runtime_check`.
+
+**Q: Is `leave with` just syntax sugar for `return Err(...)`?**
+A: No. `leave with` is a distinct semantic construct that retains its identity throughout the compilation pipeline. Unlike operator desugaring (where `a + b` is rewritten into `Add::add(&a, &b)` in HIR), `leave with` remains as an `ErrorExit` terminator in the control-flow graph. This distinction enables precise auditing (all error exit points are enumerable without pattern-matching against `return`), contract verification (`ensures on Err` binds directly to `ErrorExit` nodes), and WCET analysis (error paths and success paths are analyzed separately).
