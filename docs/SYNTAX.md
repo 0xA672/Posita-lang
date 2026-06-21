@@ -21,7 +21,7 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 `def`, `set`, `type`, `with`, `default`, `return`, `if`, `else`, `for`, `in`, `while`, `loop`, `leave`,
 `comptime`, `import`, `as`, `true`, `false`, `auto`, `and`, `or`, `not`, `sizeof`, `alignof`,
 `catch`, `panic`, `unsafe`, `let`, `finally`,
-`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`, `no_alloc_error`, `no_panic`, `debug_info`, `old`, `audit_log`, `interrupt`, `ieee_contracts`, `diverges`
+`where`, `requires`, `ensures`, `invariant`, `constraint`, `move`, `dyn`, `by`, `copy`, `ref`, `mut`, `wrap`, `saturate`, `trap`, `Self`, `no_default`, `extern`, `pub`, `edition`, `deprecated`, `experimental`, `endian`, `bit_order`, `align`, `pad`, `packed`, `async`, `await`, `task`, `channel`, `linear`, `consume`, `pure`, `io`, `trusted`, `ghost`, `scope_cleanup`, `trigger`, `validate`, `missing_match`, `apply_lemma`, `exists`, `trait`, `impl`, `decreases`, `terminates`, `cfg`, `isolate`, `hint`, `must_use`, `must_handle`, `link_proof`, `exhaustive`, `no_alloc_error`, `no_panic`, `debug_info`, `old`, `audit_log`, `interrupt`, `ieee_contracts`, `diverges`, `propagates`
 
 `Int`, `UInt`, `Ptr`, `Str`, `String`, `Result`, `Option`, `usize`, `Float` are built-in type constructors, not reserved words.  
 `linear`, `consume` are planned keywords; `by` is reserved for future use.
@@ -886,30 +886,106 @@ match value {
 - **Or patterns**: `pattern1 | pattern2` matches if either pattern matches. Both patterns must bind the same set of variables with compatible types.
 - **Guards**: The `if guard_condition` clause filters matches. Guard expressions must be `@pure` and free of side effects.
 
-### Named Scope Cleanup
-Multiple cleanup actions can be declared with `scope_cleanup` and explicitly triggered before the end of scope:
+### Structured Resource Cleanup
+
+Posita provides three complementary mechanisms for resource cleanup, each with distinct guarantees. The following table summarizes their roles:
+
+| Mechanism | Failure handling | Execution timing | Typical use case |
+|---|---|---|---|
+| RAII (`Drop` trait) | Infallible | Automatic at scope exit (declaration order reversed) | File handles, locks, memory |
+| `finally` block | Infallible | At scope exit on all paths, after `scope_cleanup` actions | Simple, always-run cleanup |
+| `scope_cleanup` | Fallible (opt‑in via `propagates`) | Deferred to scope exit (LIFO), with explicit early trigger via `trigger @name` | Multi‑exit fallible cleanup, non‑ownership actions |
+
+#### RAII (Resource Acquisition Is Initialization)
+RAII is the foundational resource management strategy. Types that implement the `Drop` trait automatically run their destructor when the value goes out of scope. The compiler guarantees that destructors execute in reverse order of declaration and that they cannot fail. See the `Drop` trait in the Traits section for details.
+
+#### `finally` Blocks
 ```posita
 def process() -> Result<(), Error> {
-    set file = File.open("data.bin")?;
-    scope_cleanup @close_file { file.close(); }
-
-    // ... operations ...
-    trigger @close_file;  // explicitly close before normal return
-    return Ok(());
-} // at scope exit, any remaining scope_cleanup actions are executed
-```
-`scope_cleanup` actions are executed in LIFO order. Unlike `defer`, they are named and can be invoked early.
-
-### Finally Blocks
-```posita
-def process() -> Result<(), Error> {
-    set file = File.open("data.bin")?;
+    set file = File::open("data.bin")?;
     return Ok(());
 } finally {
     file.release_buffer();  // infallible cleanup: no ?, leave with, return, or panic allowed
 }
 ```
-`finally` blocks are reserved for infallible cleanup. For fallible cleanup, use `scope_cleanup` and handle errors explicitly.
+`finally` blocks are reserved for infallible cleanup that must execute on every exit path. They are the simplest mechanism after RAII. For fallible cleanup, use `scope_cleanup` and handle errors explicitly.
+
+#### Named Scope Cleanup (`scope_cleanup`)
+
+`scope_cleanup` registers a named, deferred code block that is guaranteed to execute when the enclosing scope is exited, unless it is explicitly triggered earlier via `trigger @name`. It is designed for cleanup actions that may fail and that must occur regardless of which exit path a function takes, including early returns, `leave with`, and `?` propagation.
+
+**Syntax:**
+
+```posita
+scope_cleanup @name {
+    // cleanup code; may contain explicit error handling (catch, match, etc.)
+}
+```
+
+or, to allow error propagation:
+
+```posita
+scope_cleanup @name propagates {
+    // cleanup code; '?' is permitted to propagate errors
+}
+```
+
+- The block captures variables from the enclosing scope immutably or via `&mut` (subject to borrow rules). It is not a first-class closure; it cannot escape the scope.
+- Multiple `scope_cleanup` blocks in the same scope execute in **LIFO** (last‑in, first‑out) order when the scope is exited.
+- An explicit `trigger @name;` statement executes the cleanup block immediately and removes it from the deferred list. It will not execute again at scope exit. `trigger` is a statement, not an expression.
+
+**Error handling:**
+
+- By default, the cleanup block must not contain unhandled `Result` values. The `?` operator is forbidden, and any fallible operation must be explicitly handled (e.g., with `catch`, `match`, or `let _ = ...`). This prevents cleanup from silently altering a function's error signature.
+- When the `propagates` modifier is present, the block may use `?` to propagate errors. The compiler's may‑be analysis automatically includes the propagated error variants in the enclosing function's `E` type. The programmer is responsible for ensuring that the error is meaningful to callers.
+- **Error precedence:** If a function is already exiting with an error (via `leave with`), and a `scope_cleanup` with `propagates` also fails, the original error is preserved and the cleanup error is recorded in the audit log (if `@audit_log` is present) but does not replace the original. If the function would exit normally (`return Ok`), a cleanup error becomes the function's return value.
+
+**Use cases:**
+
+- **Fallible cleanup:** flushing a file buffer, closing an encrypted connection—operations that can fail and whose failure may need to be reported.
+- **Multi‑exit coverage:** ensuring a resource is released on every path without repeating the cleanup call at each `return` or `leave with`.
+- **Non‑ownership actions:** sending a bus message, resetting a GPIO pin, writing an audit log entry—cleanup not tied to a specific object's lifetime.
+
+**Borrowing implications:**
+
+Variables borrowed (especially `&mut`) by a `scope_cleanup` block remain borrowed until scope exit. This may extend their lifetime beyond the point where they are last used in normal code. The compiler enforces this and provides clear diagnostics.
+
+**Example (default, no error propagation):**
+
+```posita
+def process() -> Result<(), IoError> {
+    let file = File::open("data.log")?;
+    scope_cleanup @close { file.close(); }  // close() returns (), infallible
+    // main logic
+    for item in items {
+        file.write(item)?;
+    }
+    Ok(())
+    // @close runs here automatically
+}
+```
+
+**Example (with `propagates` and early trigger):**
+
+```posita
+def guarded_op(state: &mut State) -> Result<(), LockError | IoError> {
+    state.lock()?;
+    scope_cleanup @unlock propagates { state.unlock()?; }
+
+    if condition {
+        do_protected_work(state)?;
+        trigger @unlock;   // unlock now, no longer deferred
+        do_post_unlock_work()?;
+        return Ok(());
+    }
+
+    normal_work(state)?;
+    Ok(())
+    // if unlock not triggered, it runs here; any error is returned
+}
+```
+
+**Design rationale:** `scope_cleanup` fills the gap between infallible RAII/`finally` and manual error handling. It provides single‑point auditability for cleanup in functions with multiple exit paths, while keeping error propagation explicit and controlled.
 
 ### Expressions
 Arithmetic: `+`, `-`, `*`, `/`, `%`. The operators `+`, `-`, `*` accept optional overflow suffixes (`%`, `?`, `!`).
@@ -1513,3 +1589,6 @@ A: `@diverges` marks a function that never returns normally, even though its ret
 
 **Q: Is `leave with` just syntax sugar for `return Err(...)`?**
 A: No. `leave with` is a distinct semantic construct that retains its identity throughout the compilation pipeline. Unlike operator desugaring (where `a + b` is rewritten into `Add::add(&a, &b)` in HIR), `leave with` remains as an `ErrorExit` terminator in the control-flow graph. This distinction enables precise auditing (all error exit points are enumerable without pattern-matching against `return`), contract verification (`ensures on Err` binds directly to `ErrorExit` nodes), and WCET analysis (error paths and success paths are analyzed separately).
+
+**Q: How does `scope_cleanup` differ from `defer` in other languages?**
+A: Unlike anonymous `defer`, Posita's `scope_cleanup` is a named, non‑escaping deferred block. It supports explicit early triggering via `trigger @name`, and its default error-handling mode forbids `?` to prevent silent error injection. The `propagates` modifier must be explicitly used to allow error propagation. This design provides both flexibility for fallible cleanup and strong auditability through single-point declaration.
