@@ -292,6 +292,25 @@ The `exists` keyword introduces a name for the value being constrained. This nam
   ```
   The `@exhaustive` attribute on an enum forces all `match`, `if let`, and `while let` sites to be exhaustive, preventing future variants from being silently ignored.
 
+#### Enum Set Aliases
+
+Posita supports combining existing enum types into a named alias using the `|` operator. This is particularly useful for error aggregation and state machine simplification.
+
+```posita
+type IoOrParseError = IoError | ParseError;
+
+def read_and_parse() -> Result<Data, IoOrParseError> {
+    let content = read_file("data.bin")?;  // may propagate IoError
+    let data = parse(content)?;             // may propagate ParseError
+    Ok(data)
+}
+```
+
+- **Restriction**: The `|` operator is only permitted in `type` alias declarations. Inline `A | B` in function signatures is not allowed; the combination must be given an explicit name.
+- **Variant uniqueness**: All variant names across the combined enums must be distinct. If two enums share a variant name (e.g., both define `Timeout`), the compiler reports an error. Disambiguation requires qualifying the variant name with its enum type (e.g., `IoError::Timeout` vs `NetError::Timeout`), but this is only permitted in `catch` and `match` patterns, not in type declarations.
+- **Transparency**: The alias is fully transparent to the type system. The compiler expands `IoOrParseError` to the full set of variants at compile time. `catch` branches, `@must_handle` annotations, and `match` expressions can reference individual variants by their original names without qualifying through the alias.
+- **Recursive sets**: An enum set alias may include other set aliases in its definition (e.g., `type AppError = IoOrParseError | DbError`). The compiler flattens the chain into a single variant set.
+
 ### Layout Control Attributes
 Fine‑grained control for hardware registers and protocols:
 - **Packing**: `@packed` removes all padding between fields, ensuring minimal memory footprint. **Restriction:** `@packed` cannot be applied to structs that contain reference types (`&T`, `&mut T`, `&[T]`, `&mut [T]`). If you need a compact layout with indirection, use `Ptr` instead.
@@ -936,6 +955,14 @@ scope_cleanup @name propagates {
 
 **Error handling:**
 
+The behaviour of error propagation within a `scope_cleanup` block is governed by the presence of the `propagates` and `overrides` modifiers, as summarised below:
+
+| Modifiers | `?` operator | `catch` implicit propagation |
+|---|---|---|
+| *(none, default)* | Forbidden (compile error) | Forbidden (must be exhaustive; `\|_\\|` allowed) |
+| `propagates` | Allowed (error added to signature) | Allowed (equivalent to `?`) |
+| `propagates overrides` | Allowed (error overrides prior errors) | Allowed (error overrides prior errors) |
+
 - By default, the cleanup block must not contain unhandled `Result` values. The `?` operator is forbidden, and any fallible operation must be explicitly handled (e.g., with `catch`, `match`, or `let _ = ...`). This prevents cleanup from silently altering a function's error signature.
 - When the `propagates` modifier is present, the block may use `?` to propagate errors. The compiler's may‑be analysis automatically includes the propagated error variants in the enclosing function's `E` type. The programmer is responsible for ensuring that the error is meaningful to callers.
 - **Error precedence:** If a function is already exiting with an error (via `leave with`), and a `scope_cleanup` with `propagates` also fails, the original error is preserved and the cleanup error is recorded in the audit log (if `@audit_log` is present) but does not replace the original. If the function would exit normally (`return Ok`), a cleanup error becomes the function's return value.
@@ -1081,6 +1108,20 @@ def fetch_or_default() -> Data {
     return data;
 }
 ```
+
+**Wildcard pattern (`|_|`)**: A wildcard pattern `|_|` matches any error variant not explicitly listed in preceding branches. It can be used as a catch‑all for uniform handling of remaining errors, or to explicitly ignore them. When used, `|_|` must appear as the last branch.
+
+```posita
+def process() -> Result<(), ProcessError> {
+    set data = fetch() catch {
+        |NetworkError as e| { log(e); leave with ProcessError::NetworkFail; }
+        |_| { log("unhandled error"); cached_default }
+    };
+    return Ok(());
+}
+```
+
+The compiler verifies that `|_|` covers all remaining variants, and `capsa audit` flags wildcard branches for mandatory review, as they may silently absorb unexpected errors.
 
 **Non‑exhaustiveness**: Unlike `match`, `catch` does **not** require exhaustiveness. Any error variant that is not explicitly matched is **implicitly propagated**—equivalent to `leave with Err(unmatched_variant)`. This is the fundamental difference between `catch` and `match`: `catch` says "handle these specific errors here, let everything else pass through"; `match` says "handle all possibilities here and now."
 
@@ -1507,7 +1548,7 @@ A: `move` explicitly transfers ownership of a non‑`Copy` value in assignments,
 A: No. All `extern "C"` functions are inherently unsafe and can only be called inside `unsafe` blocks or `@trusted` functions. This ensures all FFI calls are auditable.
 
 **Q: How should `catch` patterns be written?**
-A: `catch` branches use the enum variant names directly (e.g., `|IoError| { ... }`), without qualifying them with the enum type. The error type is already known from the expression being caught. The `as` keyword can bind the error value to a local variable. For branches consisting of a single expression, the arrow shorthand `=>` can replace curly braces: `|ParseError => leave with ...`.
+A: `catch` branches use the enum variant names directly (e.g., `|IoError| { ... }`), without qualifying them with the enum type. The error type is already known from the expression being caught. The `as` keyword can bind the error value to a local variable. A wildcard `|_|` can be used to match all remaining variants. For branches consisting of a single expression, the arrow shorthand `=>` can replace curly braces: `|ParseError => leave with ...`.
 
 **Q: How do I enforce that callers handle specific errors?**
 A: Annotate the function with `@must_handle(Variant1, ...)`. The compiler will warn if a caller does not explicitly match or catch those variants. This keeps critical errors visible without forcing exhaustive matching of all variants.
@@ -1601,3 +1642,6 @@ A: Unlike anonymous `defer`, Posita's `scope_cleanup` is a named, non‑escaping
 
 **Q: How can I conditionally skip a `scope_cleanup` block (e.g., "only on failure")?**
 A: Use a ghost variable to track whether the cleanup is needed. Declare a `ghost set mut` flag before the `scope_cleanup`, check it inside the block, and update the flag after successful operations. Since ghost variables are erased at runtime, this has zero overhead. See the "Structured Resource Cleanup" section for an example.
+
+**Q: How do I combine multiple error types into a reusable signature?**
+A: Use an enum set alias with the `|` operator in a `type` declaration. For example, `type AppError = IoError | DbError | ParseError;` creates a named combination that can be used in multiple function signatures. The compiler checks for variant name uniqueness across the combined enums and reports an error if any names conflict. See the "Enum Set Aliases" section for details.
