@@ -238,7 +238,7 @@ type Config = struct {
     timeout: UInt<32>,
 } with validate = |c: &Config| -> Result<(), Error> {
     if c.timeout > 1000 {
-        return Err(Error::TimeoutTooLarge);
+        leave with Error::TimeoutTooLarge;
     }
     Ok(())
 };
