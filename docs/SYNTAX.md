@@ -1,5 +1,5 @@
 # Posita Language Syntax
-**Document revision: 2026-06-21** (working draft, not a frozen specification)
+**Document revision: 2026-06-22** (working draft, not a frozen specification)
 
 > [!NOTE]
 > This document version tracks its own edits. It does **not** correspond to a language specification release.
@@ -173,7 +173,7 @@ The compiler uses range analysis and type invariants to statically eliminate ove
 
 #### Pointer Arithmetic
 
-Pointer arithmetic is permitted **only within `unsafe` blocks** and is subject to the following rules. The compiler does not enforce memory safety for pointer arithmetic; it is the programmer's responsibility to ensure that the resulting pointer remains within the bounds of a valid allocation.
+Pointer arithmetic is permitted **only within `unsafe` blocks** and is subject to the following rules. The compiler does not enforce memory safety for pointer arithmetic because `unsafe` code explicitly opts out of the language's automatic safety guarantees; it is the programmer's responsibility to ensure that the resulting pointer remains within the bounds of a valid allocation.
 
 **Supported operations**
 
@@ -1435,7 +1435,7 @@ def main() -> Result<(), AppError> {
 - **From Ada**: explicit representation control, attribute syntax, contract‑based verification, default initialization, traceability.
 - **From Rust**: `Result`‑based error handling (without type erasure), `if let`, `match`, trait‑like generics, borrow checker.
 - **From Zig**: The `comptime` mechanism and the philosophy of moving work to compile time are direct inspirations. Posita adds the `!` call marker and integrates `comptime` with SMT‑based contract verification, going beyond what Zig's comptime offers.
-- **From ATS**: The concept of encoding invariants in types and the ambition to eliminate runtime errors through static proofs have influenced Posita. ATS is a secondary inspiration after Ada, Rust, and Zig.
+- **From ATS**: The ambition to eliminate runtime errors through static proofs and the practice of encoding invariants in types. ATS2's template system and its removal of GC demonstrate the viability of advanced type systems in resource‑constrained, no‑runtime environments. Posita diverges by separating compile‑time computation (`comptime`) from declarative code generation (`generate`) and replacing explicit proof terms with SMT‑based automation, trading some expressive power for a lower annotation burden and stronger auditability.
 - **Unique to Posita**: bit‑width parameterized integers with explicit overflow control, orthogonal pointer sizes, type‑level defaults with invariants and `no_default`, `leave`/`leave with`, type capture, fully static error monomorphization, compile‑time type factories, reflection, structured `finally` blocks, systematic UB elimination, optional strict mode, ghost variables, specification tags, named scope cleanup, construction validation, lemma functions, fine‑grained effect annotations, deferred contract checking (`@runtime_check`), layout reflection (`layout_of!`), proof hints (`@hint`), fine‑grained error accountability (`@must_handle`), tiered diagnostics, implicit invariant propagation, `old()` expressions, fixed‑precision rationals, MMIO types, interrupt vector generation, `@diverges` for deterministic non‑returning functions, and more.
 
 ---
