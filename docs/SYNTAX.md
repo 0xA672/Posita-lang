@@ -198,6 +198,10 @@ The compiler emits a diagnostic if the result of pointer arithmetic can be stati
 
 Bounds checking is **never** performed for pointer arithmetic. Use array types (`[T; N]`) or slices (`&[T]`) for safe, bounds-checked indexing.
 
+**Minimum addressable unit**
+
+References (`&T`, `&mut T`) and pointers (`*T`, `Ptr<pointee = T>`) require `T` to have a bit-width of at least 8. Types narrower than one byte (e.g., `Int<3>`, `UInt<4>`) are value-only types and cannot be the target of a reference or pointer. Bit-fields in `@packed` structs are accessed through the enclosing struct, not by direct reference.
+
 ### Explicit Lifetime Parameters
 When the compiler cannot infer lifetimes, you may annotate them explicitly:
 ```posita
