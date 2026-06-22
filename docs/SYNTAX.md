@@ -959,7 +959,7 @@ The behaviour of error propagation within a `scope_cleanup` block is governed by
 
 | Modifiers | `?` operator | `catch` implicit propagation |
 |---|---|---|
-| *(none, default)* | Forbidden (compile error) | Forbidden (must be exhaustive; &#124;_&#124; allowed) |
+| *(none, default)* | Forbidden (compile error) | Forbidden (must be exhaustive; `\|_\|` allowed) |
 | `propagates` | Allowed (error added to signature) | Allowed (equivalent to `?`) |
 | `propagates overrides` | Allowed (error overrides prior errors) | Allowed (error overrides prior errors) |
 
