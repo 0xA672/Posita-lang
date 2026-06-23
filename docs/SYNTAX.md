@@ -1378,9 +1378,9 @@ def calculate_bonus(salary: Salary, multiplier: PositiveInt) -> Salary
     ensures result >= salary
 {
     set mut result = salary;
-    set mut i: Int<32> = 0;
-    while i < multiplier
-        invariant result == salary + i * salary
+    set mut i: PositiveInt = 1;
+    while i <= multiplier
+        invariant result == salary + (i - 1) * salary
         decreases multiplier - i
     { result = result + salary; i = i + 1; }
     return result;
@@ -1410,18 +1410,18 @@ def make_employee_report(emp: &Employee) -> &[Byte] {
     return b"Report generated";
 }
 
-def sum_manual(arr: &[Int<32>]) -> Int<32> {
-    set mut total: Int<32> = 0;
+def sum_manual<T: Add<T, Output = T> + Default + Copy>(arr: &[T]) -> T {
+    set mut total: T = T::default();
     set mut idx: usize = 0;
-    while idx < arr'len { total += arr[idx]; idx += 1; }
+    while idx < arr'len { total = total + arr[idx]; idx += 1; }
     return total;
 }
 
 def main() -> Result<(), AppError> {
     set fd: OwnedFileDescriptor = 3;
-    set e1 = Employee { id = 1, age = 30, salary = 50000, dept = Department::Engineering, name = b"Alice" };
+    set e1 = Employee { id = 1, age = 25, salary = 50000, dept = Department::Engineering, name = b"Alice" };
     set mut e2 = Employee { id = 2, age = 45, salary = 75000, dept = Department::Sales, name = b"Bob" };
-    set bonus_mult: PositiveInt;
+    set bonus_mult: PositiveInt = 1;
     process_employee(&mut e2, bonus_mult) catch { /* ... */ };
     set salaries: [Salary; 3] = [e1.salary, e2.salary, 60000];
     set total_salary = sum_manual(&salaries);
