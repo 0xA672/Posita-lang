@@ -1,5 +1,5 @@
 # Posita Language Syntax
-**Document revision: 2026-06-22** (working draft, not a frozen specification)
+**Document revision: 2026-06-23** (working draft, not a frozen specification)
 
 > [!NOTE]
 > This document version tracks its own edits. It does **not** correspond to a language specification release.
@@ -37,6 +37,13 @@ Posita is a **ultra-static, systems programming language** where the programmer 
 - Byte strings: `b"hello\n"` (type `&[Byte]`, see Escape Sequences)
 - Strings: `"hello"` (type `&Str`, guaranteed valid UTF-8, see Escape Sequences)
 - Booleans: `true`, `false`
+
+**Type-annotated literals**: Any literal may be annotated with a type using the `: Type` syntax. For integer literals, this includes refined types (e.g., `1: PositiveInt`). The compiler checks at compile time that the literal satisfies the target type's invariants; failure is a compile-time error. This annotation is particularly useful for disambiguating generic or overloaded contexts, and for initializing refined types without relying on type inference from a variable declaration.
+
+```posita
+set one: PositiveInt = 1;               // type inferred from declaration
+set also_one = 1: PositiveInt;          // type explicitly annotated on the literal
+```
 
 ### Escape Sequences
 
@@ -1373,14 +1380,16 @@ def sum_list<T>(items: &[T]) -> T where T: AddableDefault {
     return total;
 }
 
-def calculate_bonus(salary: Salary, multiplier: PositiveInt) -> Salary
+def calculate_bonus(salary: Salary, multiplier: Int<32>) -> Salary
     requires salary >= 0
+    requires multiplier > 0
     ensures result >= salary
 {
     set mut result = salary;
-    set mut i: PositiveInt = 1;
-    while i <= multiplier
-        invariant result == salary + (i - 1) * salary
+    set mut i: Int<32> = 0;
+    while i < multiplier
+        invariant result == salary + i * salary
+        invariant i >= 0
         decreases multiplier - i
     { result = result + salary; i = i + 1; }
     return result;
@@ -1392,7 +1401,7 @@ def process_employee(emp: &mut Employee, bonus_mult: PositiveInt) -> Result<(), 
     if emp.age > 100 { leave with AppError::ValidationError(b"Employee too old\0               "); }
     safe_puts(b"Processing employee...\0") catch {
         |IoError as e| { log(e); leave with AppError::IoError; }
-        |ValidationError => { leave with AppError::IoError; }
+        |ValidationError(_)| { leave with AppError::IoError; }
     };
     emp.salary = calculate_bonus(emp.salary, bonus_mult);
     return Ok(());
@@ -1413,7 +1422,10 @@ def make_employee_report(emp: &Employee) -> &[Byte] {
 def sum_manual<T: Add<T, Output = T> + Default + Copy>(arr: &[T]) -> T {
     set mut total: T = T::default();
     set mut idx: usize = 0;
-    while idx < arr'len { total = total + arr[idx]; idx += 1; }
+    while idx < arr'len {
+        total = total + *arr[idx];
+        idx = idx + 1:usize;
+    }
     return total;
 }
 
@@ -1421,7 +1433,7 @@ def main() -> Result<(), AppError> {
     set fd: OwnedFileDescriptor = 3;
     set e1 = Employee { id = 1, age = 25, salary = 50000, dept = Department::Engineering, name = b"Alice" };
     set mut e2 = Employee { id = 2, age = 45, salary = 75000, dept = Department::Sales, name = b"Bob" };
-    set bonus_mult: PositiveInt = 1;
+    set bonus_mult: PositiveInt = 1: PositiveInt;
     process_employee(&mut e2, bonus_mult) catch { /* ... */ };
     set salaries: [Salary; 3] = [e1.salary, e2.salary, 60000];
     set total_salary = sum_manual(&salaries);
@@ -1564,7 +1576,7 @@ A: Dynamic dispatch is available via `dyn Trait` objects, which use a vtable for
 A: `decreases expr` on a loop guarantees termination by requiring `expr` to be a non‑negative integer that strictly decreases each iteration. `terminates arg` on a recursive function requires the specified argument to strictly decrease on each recursive call with a lower bound. Both are used by the compiler to prove termination, which is essential for safety‑critical systems and WCET analysis.
 
 **Q: How do I write integer literals with a specific bit width?**
-A: Use the `42i32` suffix for `Int<32>` or `0xFFu8` for `UInt<8>`. This is syntactic sugar for `42: Int<32>` and `0xFF: UInt<8>`, respectively. The type is fully checked by the compiler.
+A: Use the `42i32` suffix for `Int<32>` or `0xFFu8` for `UInt<8>`. This is syntactic sugar for `42: Int<32>` and `0xFF: UInt<8>`, respectively. The type is fully checked by the compiler. For refined types like `PositiveInt`, you can either rely on type inference from the declaration (`set x: PositiveInt = 1;`) or annotate the literal directly (`1: PositiveInt`). Both forms are checked at compile time.
 
 **Q: What is the `isolate` block?**
 A: An `isolate` block guarantees that the enclosed code does not access any external mutable state. The compiler verifies this statically, enabling safe concurrent execution from multiple interrupt or task contexts.
