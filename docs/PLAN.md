@@ -64,10 +64,7 @@ The compiler team is implementing Stage 0. A type ID system has been adopted for
 ### Stage 3 — Advanced Type System
 - Generics with `where` clauses, traits, `constraint` blocks.
 - `comptime` type factories, `@typeInfo`, `auto<…>` capture.
-- **Compile‑time type parameters (`const` generics)**: syntactic sugar for
-  `comptime` type factories, enabling `Mod<1000000007>` and similar
-  value‑parameterized types. Desugared into `comptime` factory calls
-  during HIR construction.
+- **Compile‑time type parameters (`const` generics)**: independent language feature enabling types parameterized by compile‑time constants (e.g., `Mod<1000000007>`). `const` generic parameters are visible in contracts and can be used for symbolic reasoning across type instances, providing capabilities beyond what `comptime` factories alone can express.
 - Layout control (`@packed`, `@endian`, etc.).
 - Enum set aliases with `|` operator for error aggregation.
 - `generate` blocks for declarative code generation.
@@ -152,8 +149,7 @@ The following features are part of the language design but will be implemented i
 
 - `linear` and `@consume(N)` (graded types)
 - Typestate (`File<Open>` / `File<Closed>`)
-- `const` generics (compile‑time type parameters) — planned as syntactic
-  sugar over `comptime` type factories, targeting Stage 3+
+- `const` generics (compile‑time type parameters) — planned as an independent language feature, not syntactic sugar over `comptime` factories. `const` generic parameters are first‑class compile‑time values that can appear in types, contracts, and `where` clauses, enabling symbolic reasoning across type instances.
 - `Rational<p, q>` fixed‑precision rationals
 - `Regex<"...">` compile‑time regex
 - MMIO types and interrupt vector generation
@@ -173,13 +169,13 @@ These are fully specified in `SYNTAX.md` and will be incrementally added as the 
 
 The following architectural decisions have been made and are recorded here for reference:
 
-### 12.1 Compile‑Time Type Parameters: `comptime` Factories First, `const` Generics Later
+### 12.1 Compile‑Time Type Parameters: `comptime` Factories First, `const` Generics as Independent Feature
 
-Posita needs the ability to parameterize types by compile‑time constants (e.g., `Mod<1000000007>`). We have decided to implement `comptime` type factories in Stage 3, with `const` generics planned as syntactic sugar in a later stage.
+Posita needs the ability to parameterize types by compile‑time constants (e.g., `Mod<1000000007>`). We have decided to implement `comptime` type factories in Stage 3 as the first mechanism for compile‑time type generation, while planning `const` generics as a separate, more powerful language feature for a later stage.
 
-- **`comptime` type factories** use the existing `comptime` execution engine to generate concrete types. They require no new compiler infrastructure and cover the majority of use cases (hardware registers, protocol frames, cryptographic parameters).
-- **`const` generics** will be implemented as syntactic sugar that desugars into `comptime` factory calls during HIR construction. An internal `ConstTypeParam` IR node has been introduced early to ensure both approaches share the same backend representation, preventing architectural changes when `const` generics are added.
-- When both are available, `comptime` factories will serve complex compile‑time metaprogramming, while `const` generics will serve lightweight value parameterization with contract‑level symbolic reasoning.
+- **`comptime` type factories** use the existing `comptime` execution engine to generate concrete types. They require no new compiler infrastructure and cover the majority of use cases (hardware registers, protocol frames, cryptographic parameters). However, they cannot express cross‑instance relationships or provide symbolic type parameters for contract reasoning.
+- **`const` generics** will be implemented as a distinct feature that introduces first‑class compile‑time value parameters into the type system. These parameters are visible in contracts, `where` clauses, and SMT solver contexts, enabling proofs about entire families of types (e.g., “for all M > 0, Mod<M> addition is closed”) and cross‑instance dependencies (e.g., `widen<N, M> where N <= M`). An internal `ConstTypeParam` IR node has been introduced early to ensure both approaches share the same backend representation.
+- When both are available, `comptime` factories will serve complex compile‑time metaprogramming, while `const` generics will serve type‑level abstraction with contract‑level symbolic reasoning.
 
 ### 12.2 Internal Type ID System
 
@@ -188,14 +184,3 @@ The compiler uses type IDs internally for monomorphization, vtable generation, d
 ### 12.3 Default Backend
 
 The default compiler backend is Cranelift, chosen for fast compilation. An optional LLVM backend may be added later for peak performance. RVO/NRVO and move elision for non‑`Copy` types are enforced by the frontend during MIR-to-CLIF lowering, rather than relying on backend optimizations.
-
-## 13. Immediate Next Steps
-
-1. Implement Stage 0 (lexer + parser for `def main() {}`).
-2. Implement internal type ID system in HIR/MIR.
-3. Begin implementing Stage 1 (core types and expressions).
-4. Publish the first alpha release when Stage 1 is complete.
-
----
-
-We are building the foundation for a new generation of safety‑critical software. Every line of code we write will itself be subject to the same rigorous standards we aim to provide for our users. Let's begin.
