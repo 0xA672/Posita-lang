@@ -1,7 +1,7 @@
 # Posita Project Plan (PLAN.md)
 
 **Status:** Living document  
-**Last updated:** 2026-06-19
+**Last updated:** 2026-06-26
 
 ## 1. Vision
 
@@ -16,7 +16,7 @@ The project is organized into six stages. Stage 0 begins immediately; subsequent
 | 0 | Bootstrapping | Parse `def main() {}`, generate executable via Cranelift |
 | 1 | Core language | Integers, floats, arrays, control flow, functions, basic modules |
 | 2 | Error handling | `Result<T,E>`, `?`, `catch`, `leave with`, `finally`, contracts (runtime only) |
-| 3 | Advanced types | Generics, traits, constraints, `comptime` type factories, reflection, layout control |
+| 3 | Advanced types | Generics, traits, constraints, `comptime` type factories, `const` generics, reflection, layout control |
 | 4 | Full verification | SMT‑based contract proving, strict mode, `@trusted`, `@lemma`, `@comptime_test` |
 | 5 | Concurrency & FFI | Tasks, channels, `async`/`await`, `extern "C"`, `unsafe`, interrupt handling |
 | 6 | Tooling & ecosystem | LSP, package manager (`capsa`), debugger, formatter, documentation generator |
@@ -25,7 +25,9 @@ The project is organized into six stages. Stage 0 begins immediately; subsequent
 
 We have completed the initial design phase. The language syntax (`SYNTAX.md`) and core philosophy (`DESIGN.md`) are stable enough to begin compiler implementation. The package manager design (`CAPSA_DESIGN.md`) and compiler implementation guide (`IMPL.md`) are also complete.
 
-**Stage 0 is about to begin.**
+The compiler team is implementing Stage 0. A type ID system has been adopted for internal compiler use (monomorphization, vtable generation, debug info); it is strictly internal and never exposed to user code. An internal `ConstTypeParam` IR node has been introduced in the HIR/MIR design to serve as the shared foundation for both `comptime` type factories and future `const` generics.
+
+**Stage 0 is in progress.**
 
 ## 4. Short‑Term Goals (Stage 0–2)
 
@@ -34,15 +36,18 @@ We have completed the initial design phase. The language syntax (`SYNTAX.md`) an
 - Implement lexer using `logos`.
 - Implement minimal parser that handles `def main() { }`.
 - Integrate Cranelift to produce an executable for this minimal program.
+- Implement internal type ID system (compiler‑only, not user‑exposed).
 - **Deliverable**: `ponent run hello.ps` compiles and runs a trivial program.
 
 ### Stage 1 — Core Type System and Expressions
 - All primitive types (`Int<N>`, `UInt<N>`, `Bool`, `Float`, arrays, slices).
 - Integer literals with bit‑width inference.
+- Type‑annotated literals (`42: Int<32>`, `1: PositiveInt`).
 - Arithmetic, bitwise, logical operators with overflow control.
 - Variable declarations (`set`, `set mut`), assignment.
 - Control flow: `if`, `else`, `while`, `for`, `loop`, `leave`, `continue`, labels.
 - Functions, `return`, basic modules and imports.
+- RVO/NRVO for non‑`Copy` types, move elision guarantees.
 - **Deliverable**: Compile and run non‑trivial algorithms (fib, sorting) with integers and arrays.
 
 ### Stage 2 — Error Handling and Basic Contracts
@@ -50,21 +55,30 @@ We have completed the initial design phase. The language syntax (`SYNTAX.md`) an
 - `From` trait for automatic error conversion.
 - Runtime contract checking for `requires`/`ensures` (no SMT yet).
 - Type‑level defaults (`with default`, `no_default`).
+- `scope_cleanup` with `trigger`, `propagates`, `overrides`.
+- Ghost variables for conditional cleanup.
 - **Deliverable**: Robust error handling; programs can use `?` and `catch`.
 
 ## 5. Medium‑Term Goals (Stage 3–5)
 
 ### Stage 3 — Advanced Type System
 - Generics with `where` clauses, traits, `constraint` blocks.
-- `comptime` type factories, `@typeInfo`, `auto[<T>..]` capture.
+- `comptime` type factories, `@typeInfo`, `auto<…>` capture.
+- **Compile‑time type parameters (`const` generics)**: syntactic sugar for
+  `comptime` type factories, enabling `Mod<1000000007>` and similar
+  value‑parameterized types. Desugared into `comptime` factory calls
+  during HIR construction.
 - Layout control (`@packed`, `@endian`, etc.).
+- Enum set aliases with `|` operator for error aggregation.
+- `generate` blocks for declarative code generation.
 - **Deliverable**: Type‑level programming possible; standard library can begin.
 
 ### Stage 4 — Compile‑Time Execution and Full Contracts
 - `comptime` blocks/functions with budget limits.
 - Static contract verification using Z3 (strict mode).
 - `@trusted`, `@lemma`, `@comptime_test`.
-- `@runtime_check` attribute.
+- `@runtime_check`, `@ieee_contracts`, `@diverges` attributes.
+- May‑be and must‑be error analysis.
 - **Deliverable**: Strict Mode can verify simple contracts automatically.
 
 ### Stage 5 — Concurrency and System Programming
@@ -72,6 +86,7 @@ We have completed the initial design phase. The language syntax (`SYNTAX.md`) an
 - `extern "C"` FFI with contractual wrappers.
 - `unsafe` blocks with boundary checks.
 - Interrupt handling (`@interrupt`).
+- Dynamic dispatch (`dyn Trait`) in `@trusted` contexts.
 - **Deliverable**: Real‑time and concurrent programs compile and run.
 
 ## 6. Long‑Term Goals (Stage 6 and beyond)
@@ -83,6 +98,10 @@ We have completed the initial design phase. The language syntax (`SYNTAX.md`) an
 - Self‑hosting: rewrite `ponent` in Posita.
 - Formal verification backend (long‑term research).
 - Certification support (DO‑178C, ISO 26262) via `capsa certify`.
+- `linear` and `@consume(N)` (graded types).
+- Typestate (`File<Open>` / `File<Closed>`).
+- Session‑typed channels (standard library pattern, not built‑in syntax).
+- seL4 platform support as reference target.
 
 ## 7. Technology Stack (Compiler)
 
@@ -91,7 +110,7 @@ We have completed the initial design phase. The language syntax (`SYNTAX.md`) an
 | Implementation language | Rust |
 | Lexer | `logos` |
 | Parser | Hand‑written recursive descent |
-| IRs | Custom HIR / MIR (Rust structs) |
+| IRs | Custom HIR / MIR (Rust structs) with `ConstTypeParam` node |
 | AOT backend | `cranelift-object` |
 | JIT backend | `cranelift-jit` (for `comptime` execution) |
 | SMT solver | Z3 via `z3-rs` |
@@ -111,14 +130,14 @@ We have completed the initial design phase. The language syntax (`SYNTAX.md`) an
 
 ## 9. Repository Structure
 
-| Repository | Content |
-|------------|---------|
-| `posita-lang/posita-lang` | Language specification, design docs, discussions |
-| `posita-lang/ponent` | Compiler source (Rust) |
-| `posita-lang/capsa` | Package manager source (Rust) |
-| `posita-lang/std` | Standard library (Posita) |
-| `posita-lang/vscode-posita` | VS Code extension |
-| `posita-lang/playground` | Web playground (WASM) |
+| Repository | Content | Status |
+|------------|---------|--------|
+| `0xA672/Posita-lang` | Language specification, design docs, discussions | Active |
+| `0xA672/Ponent` | Compiler source (Rust) | Active |
+| `posita-lang/capsa` | Package manager source (Rust) | Planned (Stage 6) |
+| `posita-lang/std` | Standard library (Posita) | Planned (Stage 3+) |
+| `posita-lang/vscode-posita` | VS Code extension | Planned (Stage 6) |
+| `posita-lang/playground` | Web playground (WASM) | Planned (Stage 6) |
 
 ## 10. Community Involvement
 
@@ -133,6 +152,8 @@ The following features are part of the language design but will be implemented i
 
 - `linear` and `@consume(N)` (graded types)
 - Typestate (`File<Open>` / `File<Closed>`)
+- `const` generics (compile‑time type parameters) — planned as syntactic
+  sugar over `comptime` type factories, targeting Stage 3+
 - `Rational<p, q>` fixed‑precision rationals
 - `Regex<"...">` compile‑time regex
 - MMIO types and interrupt vector generation
@@ -144,16 +165,36 @@ The following features are part of the language design but will be implemented i
 - `layout_of!` compile‑time reflection
 - Tiered diagnostics (L1/L2/L3)
 - `capsa certify` for certification report generation
+- `generate` blocks for declarative code generation
 
 These are fully specified in `SYNTAX.md` and will be incrementally added as the compiler matures.
 
-## 12. Immediate Next Steps
+## 12. Design Decisions
 
-1. Initialize the `posita-lang/ponent` repository with a Rust project.
-2. Set up CI/CD for the compiler.
-3. Implement Stage 0 (lexer + parser for `def main() {}`).
-4. Begin implementing Stage 1 (core types and expressions).
-5. Publish the first alpha release when Stage 1 is complete.
+The following architectural decisions have been made and are recorded here for reference:
+
+### 12.1 Compile‑Time Type Parameters: `comptime` Factories First, `const` Generics Later
+
+Posita needs the ability to parameterize types by compile‑time constants (e.g., `Mod<1000000007>`). We have decided to implement `comptime` type factories in Stage 3, with `const` generics planned as syntactic sugar in a later stage.
+
+- **`comptime` type factories** use the existing `comptime` execution engine to generate concrete types. They require no new compiler infrastructure and cover the majority of use cases (hardware registers, protocol frames, cryptographic parameters).
+- **`const` generics** will be implemented as syntactic sugar that desugars into `comptime` factory calls during HIR construction. An internal `ConstTypeParam` IR node has been introduced early to ensure both approaches share the same backend representation, preventing architectural changes when `const` generics are added.
+- When both are available, `comptime` factories will serve complex compile‑time metaprogramming, while `const` generics will serve lightweight value parameterization with contract‑level symbolic reasoning.
+
+### 12.2 Internal Type ID System
+
+The compiler uses type IDs internally for monomorphization, vtable generation, debug info, incremental compilation, and metadata caching. Type IDs are based on structural hashing of type content and are stable across compilation units. They are strictly internal and never exposed to user code.
+
+### 12.3 Default Backend
+
+The default compiler backend is Cranelift, chosen for fast compilation. An optional LLVM backend may be added later for peak performance. RVO/NRVO and move elision for non‑`Copy` types are enforced by the frontend during MIR-to-CLIF lowering, rather than relying on backend optimizations.
+
+## 13. Immediate Next Steps
+
+1. Implement Stage 0 (lexer + parser for `def main() {}`).
+2. Implement internal type ID system in HIR/MIR.
+3. Begin implementing Stage 1 (core types and expressions).
+4. Publish the first alpha release when Stage 1 is complete.
 
 ---
 
