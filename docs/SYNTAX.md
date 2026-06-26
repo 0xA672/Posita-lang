@@ -1,5 +1,5 @@
 # Posita Language Syntax
-**Document revision: 2026-06-23** (working draft, not a frozen specification)
+**Document revision: 2026-06-26** (working draft, not a frozen specification)
 
 > [!NOTE]
 > This document version tracks its own edits. It does **not** correspond to a language specification release.
@@ -896,6 +896,25 @@ x = x + 1;
 def function_name(param1: Type1, param2: Type2) -> ReturnType { ... }
 ```
 Default parameter values: `def f(x: Int<32> = 0) { ... }`
+
+### Return Value Semantics
+
+When a function returns a value of a non‑`Copy` type, the compiler guarantees that the return value is constructed directly in the caller's stack frame. This eliminates the intermediate `move` and any associated `Drop` call. Named return value optimization (NRVO) is guaranteed when all return paths return the same local variable that has not had its address taken.
+
+For `Copy` types, no such guarantee is made; the value is returned via standard register or stack conventions.
+
+### Move Elision for Non‑Copy Types
+
+For types that are not `Copy`, the compiler guarantees that `move` operations are elided in the following contexts:
+
+- **Return value optimization (RVO)**: A returned value is constructed directly in the caller's return slot.
+- **Named return value optimization (NRVO)**: A local variable that is returned on all paths, and has not had its address taken, is constructed directly in the return slot.
+- **Temporary materialization**: A temporary value (e.g., the result of a function call or constructor expression) that is immediately used to initialize a variable, field, or parameter is constructed directly in the target location.
+- **Argument passing**: An argument of non‑`Copy` type is passed directly to the callee's parameter slot without an intermediate `move`.
+
+In all these cases, no intermediate `move` is performed, and no corresponding `Drop` call occurs on the source location.
+
+These guarantees ensure that factory functions, builder patterns, and value‑oriented APIs have predictable, zero‑overhead semantics for non‑`Copy` types.
 
 ### Pattern Matching
 > **Pattern refutability** : `set` does not support pattern destructuring;
