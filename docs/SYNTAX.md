@@ -1,5 +1,5 @@
 # Posita Language Syntax
-**Document revision: 2026-06-26** (working draft, not a frozen specification)
+**Document revision: 2026-06-28** (working draft, not a frozen specification)
 
 > [!NOTE]
 > This document version tracks its own edits. It does **not** correspond to a language specification release.
@@ -352,6 +352,7 @@ The following attributes are not layout‑specific but affect language semantics
 | `@experimental` | Function, Type | Marks a feature as experimental |
 | `@inline` | Function | Forces inlining at call sites; compile error if not possible |
 | `@noinline` | Function | Prevents inlining of the function |
+| `@auto_deref` | impl Deref | Allows method‑call receiver auto‑dereferencing for this `Deref` implementation. Without this attribute, a `Deref` impl requires explicit `(*x).method()` syntax for method calls through the wrapper type. `&T` / `&mut T` are exempt and always auto‑dereference. |
 | `@must_use` | Function, Type | Compiler warns if the return value is silently discarded. `Result` and `Option` are implicitly `@must_use`. |
 | `@must_handle(Variant1, ...)` | Function (returning `Result`) | Compiler warns if the caller does not explicitly match or catch the listed error variants. Variant names are resolved against the error type `E` of `Result<_, E>`. If a variant name is ambiguous in the current scope, the compiler emits an error and requires explicit qualification using `EnumName::Variant`. |
 | `@tailrec` | Function | Verifies that all recursive calls are in tail position and enforces tail‑call optimization; compile error if not possible |
@@ -386,7 +387,7 @@ The following attributes are not layout‑specific but affect language semantics
 1. `@cfg` is evaluated first (determines existence of the item).
 2. Effect annotations (`@pure`, `@io`, `@alloc`, `@no_alloc`, `@no_alloc_error`, `@no_panic`, `@diverges`) are checked for consistency.
 3. Contract‑related attributes (`@trusted`, `@runtime_check`, `@link_proof`, `@lemma`, `@ieee_contracts`) are processed.
-4. Code‑generation attributes (`@inline`, `@noinline`, `@tailrec`) are applied last.
+4. Code‑generation attributes (`@inline`, `@noinline`, `@tailrec`, `@auto_deref`) are applied last.
 
 Incompatible combinations rejected at compile time:
 - `@pure` + `@runtime_check`
@@ -542,8 +543,40 @@ trait Copy: Clone { }  // marker trait, no methods
 trait Clone {
     def clone(&self) -> Self;
 }
+
+trait Deref {
+    type Target;
+    def deref(&self) -> &Self::Target;
+}
 ```
 Within a trait definition, `type Name = DefaultType;` declares an associated type with a default value. Implementations may override the default or use it as‑is.
+
+### Method‑Call Auto‑Dereferencing
+
+Posita provides a controlled form of auto‑dereferencing for method calls. A method call `receiver.method(args)` automatically inserts dereference steps under the following conditions:
+
+- **`&T` / `&mut T`**: These built‑in reference types always auto‑dereference to `T`. The call `r.method()` where `r: &Point` is equivalent to `(*r).method()`.
+- **`@auto_deref` on `Deref` implementations**: A type that implements `Deref` may annotate its `impl` block with `@auto_deref`. This grants method‑call auto‑dereferencing through that specific `Deref` implementation.
+
+A `Deref` implementation without `@auto_deref` does not participate in auto‑dereferencing, and method calls through the wrapper type require explicit `(*x).method()` syntax.
+
+```posita
+// Standard library Rc<T> – auto‑deref is enabled by the type author
+impl<T> Deref for Rc<T> {
+    type Target = T;
+    @auto_deref
+    def deref(&self) -> &T { /* … */ }
+}
+
+// Opaque wrapper – auto‑deref is intentionally disabled
+impl<T> Deref for OpaquePtr<T> {
+    type Target = T;
+    // no @auto_deref → method calls on OpaquePtr<T> do NOT auto‑deref
+    def deref(&self) -> &T { /* … */ }
+}
+```
+
+This design keeps auto‑dereferencing explicit at the point where it is granted—the `Deref` implementation—while providing ergonomic method calls for smart pointers and other wrapper types that are explicitly designed to be transparent.
 
 ### Implementing a Trait
 ```posita
@@ -607,6 +640,7 @@ The following traits are defined by the language and automatically implemented f
 - `Clone` – explicit duplication
 - `Default` – default value construction
 - `Drop` – destructor
+- `Deref` – explicit dereferencing; `@auto_deref` may be attached to grant method‑call auto‑deref
 - `Display` – formatting
 - `Serialize`, `Write` – I/O traits (standard library)
 
@@ -1680,3 +1714,6 @@ A: Use a ghost variable to track whether the cleanup is needed. Declare a `ghost
 
 **Q: How do I combine multiple error types into a reusable signature?**
 A: Use an enum set alias with the `|` operator in a `type` declaration. For example, `type AppError = IoError | DbError | ParseError;` creates a named combination that can be used in multiple function signatures. The compiler checks for variant name uniqueness across the combined enums and reports an error if any names conflict. See the "Enum Set Aliases" section for details.
+
+**Q: What is `@auto_deref` and when should I use it?**
+A: `@auto_deref` is an attribute placed on a `Deref` implementation that allows method‑call receivers to auto‑dereference through that implementation. Without it, wrapper types require explicit `(*x).method()` syntax. Use `@auto_deref` when your type is designed to be a transparent wrapper (e.g., `Rc<T>`, `Box<T>`). Omit it when the dereference should be explicit (e.g., opaque pointers, newtypes with semantic boundaries). Built‑in references (`&T` / `&mut T`) always auto‑dereference without requiring the attribute.
