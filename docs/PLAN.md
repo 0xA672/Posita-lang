@@ -129,12 +129,12 @@ The compiler team is implementing Stage 0. A type ID system has been adopted for
 
 | Repository | Content | Status |
 |------------|---------|--------|
-| `0xA672/Posita-lang` | Language specification, design docs, discussions | Active |
-| `0xA672/Ponent` | Compiler source (Rust) | Active |
-| `posita-lang/capsa` | Package manager source (Rust) | Planned (Stage 6) |
-| `posita-lang/std` | Standard library (Posita) | Planned (Stage 3+) |
-| `posita-lang/vscode-posita` | VS Code extension | Planned (Stage 6) |
-| `posita-lang/playground` | Web playground (WASM) | Planned (Stage 6) |
+| `Posita-lang/Posita-lang` | Language specification, design docs, discussions | Active |
+| `Posita-lang/Ponent` | Compiler source (Rust) | Active |
+| `Posita-lang/capsa` | Package manager source (Rust) | Planned (Stage 6) |
+| `Posita-lang/std` | Standard library (Posita) | Planned (Stage 3+) |
+| `Posita-lang/vscode-posita` | VS Code extension | Planned (Stage 6) |
+| `Posita-lang/playground` | Web playground (WASM) | Planned (Stage 6) |
 
 ## 10. Community Involvement
 
